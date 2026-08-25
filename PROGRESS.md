@@ -862,3 +862,34 @@ Identical. linphone.org discloses nothing before authentication. Without the
 control row I might have read "407 for his address" as meaning something — the
 same mistake shape as the Apple capabilities table earlier, where an empty cell
 only became decidable against a row known to be populated.
+
+### Escalating approach class, not attempt count
+
+Four attempts at xtool-on-macOS is still **one idea**, and CLAUDE.md is explicit
+that the move is to change category rather than keep varying the same one. So
+the next approach is written down before it is needed.
+
+Reading xtool's own `SDKBuilder.swift` shows exactly what a Darwin SDK is made
+of, which means it can be assembled without xtool ever running on macOS:
+
+```
+Platforms/{iPhoneOS,MacOSX,iPhoneSimulator}.platform/Developer/SDKs/*.sdk
+Platforms/*/Developer/Library/{Frameworks,PrivateFrameworks}
+Toolchains/.../usr/lib/{swift,clang}
+```
+
+**Plan B: let the runner be a file server, not a build machine.** `tar` those
+subtrees out of `Xcode_26.3.app`, upload as an artifact, reassemble the
+`Xcode.app`-shaped tree on archserver, and run the **Linux** xtool — the one
+that demonstrably works here — with `sdk install` against it. macOS xtool never
+executes at all.
+
+The cost is transfer size. `iPhoneOS.sdk` alone is likely the only one needed to
+build for a device, and dropping `MacOSX` and `iPhoneSimulator` should cut it
+several-fold. That is a measurement to take on the runner, not a guess — and the
+`du -sh` already in the workflow was put there for exactly this reason.
+
+**Plan C**, if that also fails: build the `.ipa` on the runner outright with
+plain `xcodebuild`/SwiftPM and no xtool. That needs the app source in a repo,
+which is a decision of his rather than mine — the fallback workflow for it is
+written and deliberately unpushed.
