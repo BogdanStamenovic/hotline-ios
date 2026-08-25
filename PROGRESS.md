@@ -707,3 +707,35 @@ One real bug the tests found: the response loop decremented a counter by a fixed
 immediately by a `200` ended the loop before the `200` was ever read.
 
 **68 tests, ruff clean, mypy clean.**
+
+### The biggest unknown in `sip.py`, removed without an account
+
+`sip.linphone.org` answers an **unauthenticated** REGISTER with a 401 challenge,
+which needs no credentials at all to elicit. So this was testable now rather
+than at 20:30 with him waiting:
+
+```
+sip.linphone.org -> 176.31.149.179
+udp:5060         -> SIP/2.0 401
+challenge        -> realm=sip.linphone.org  nonce=...  opaque=+GNywA==
+                    algorithm=MD5  qop=auth
+```
+
+Three things that were open are now closed:
+
+1. **The host is reachable from archserver over UDP 5060.** That was the reason
+   TLS was being held in reserve; UDP works.
+2. **They speak the protocol as expected**, and answer promptly.
+3. **`parse_challenge` handles their real header**, including `opaque` — which
+   they send, many servers do not, and which must be echoed back verbatim or the
+   authenticated REGISTER is rejected. That failure presents as "it just does
+   not ring", with no useful error.
+
+Their exact challenge is now a test fixture, alongside one asserting the
+`Authorization` header echoes `opaque` and carries `qop`/`nc`/`cnonce`. Kept as
+a fixture rather than a live call so the suite stays offline.
+
+**Still unverified: everything after authentication succeeds.** That needs an
+account, and the INVITE reaching his handset needs his phone.
+
+**70 tests.**
