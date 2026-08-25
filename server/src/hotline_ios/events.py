@@ -105,7 +105,7 @@ class EventLog:
             return found
         try:
             await asyncio.wait_for(self._arrived.wait(), timeout)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             return []
         return self.since(cursor)
 
