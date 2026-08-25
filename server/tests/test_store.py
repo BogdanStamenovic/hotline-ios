@@ -273,3 +273,45 @@ def test_health_stats_report_only_what_was_checked(tmp_path):
     broken = store.stats()
     assert broken["db_ok"] is False
     assert "db_error" in broken
+
+
+def test_roster_ticks_are_bounded_and_real_events_are_not(store):
+    """A busy box with the app listening writes a tick every few seconds forever.
+
+    Trimming those is NOT the automatic retention §3 rules out: that decision is
+    about his history, and this touches none of it. A tick carries nothing that
+    is not recomputable from the roster itself.
+    """
+    from hotline_ios.store import MAX_ROSTER_TICKS, ROSTER_TRIM_EVERY
+
+    kept = store.append_event("a", "claude", "a real thing he said", at=1.0)
+    for i in range(MAX_ROSTER_TICKS + 200):
+        store.append_roster_event("a", f"change {i}", at=float(i))
+
+    # A big explicit limit: roster_since() pages at MAX_PAGE, which is a cursor
+    # concern and says nothing about how many rows are actually held.
+    remaining = store.roster_since(0, limit=10_000)
+    # The bound is approximate on purpose -- the trim runs once every
+    # ROSTER_TRIM_EVERY appends rather than on each one -- so the count sits in
+    # a band rather than on a number.
+    assert MAX_ROSTER_TICKS <= len(remaining) <= MAX_ROSTER_TICKS + ROSTER_TRIM_EVERY
+    # The newest survive; it is the stale end that goes.
+    assert remaining[-1].text == f"change {MAX_ROSTER_TICKS + 199}"
+    # And nothing of his was touched.
+    assert [e.seq for e in store.since("a", 0)] == [kept.seq]
+
+
+def test_trimming_only_ever_makes_a_client_refetch_too_often(store):
+    """A cursor that falls behind the trimmed window still sees every remaining
+    tick, so the failure direction is over-invalidation, never a missed one."""
+    from hotline_ios.store import MAX_ROSTER_TICKS
+
+    for i in range(MAX_ROSTER_TICKS + 100):
+        store.append_roster_event("a", f"change {i}", at=float(i))
+    store.trim_roster_events()
+    remaining = store.roster_since(0, limit=10_000)
+    assert len(remaining) == MAX_ROSTER_TICKS
+    # An ancient cursor gets everything that is left rather than nothing: the
+    # first page starts at the oldest surviving tick, not at the client's.
+    page = store.roster_since(0)
+    assert page[0].seq == remaining[0].seq

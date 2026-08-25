@@ -52,6 +52,18 @@ collide with a registry name (`hotline-80`, `data-88`) is better than a NULL
 that every query then has to special-case. It is filtered out of the roster: it
 is a bucket, not an agent."""
 
+MAX_ROSTER_TICKS = 500
+"""How many roster invalidation ticks are kept, approximately.
+
+Approximately because the trim runs every `ROSTER_TRIM_EVERY` appends, so the
+real count sits between this and this plus that. Nothing depends on the exact
+figure: a tick is an invalidation and holding a few too many costs bytes."""
+
+ROSTER_TRIM_EVERY = 64
+"""Trim once every this many ticks rather than on each one -- the trim is a
+scan-and-delete and doing it per append would pay for a bound that is only ever
+approached slowly."""
+
 MAX_PAGE = 200
 """Ceiling on `history(limit=)`. §6 of the plan; also stops one request from
 pulling a hundred thousand rows into a phone."""
@@ -90,6 +102,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_agent_seq ON events(agent_name, seq);
 CREATE INDEX IF NOT EXISTS events_conversation_seq ON events(conversation_id, seq);
+CREATE INDEX IF NOT EXISTS events_kind_seq ON events(kind, seq);
 
 CREATE TABLE IF NOT EXISTS phases (
   id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, conversation_id TEXT,
@@ -181,6 +194,7 @@ class Store:
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path) if path is not None else default_path()
         self._lock = threading.RLock()
+        self._roster_appends = 0
         if str(self.path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.path), check_same_thread=False, timeout=5.0)
@@ -475,7 +489,39 @@ class Store:
     # ---- roster ticks ----------------------------------------------------
 
     def append_roster_event(self, agent_name: str, text: str, *, at: float | None = None) -> int:
-        return self.append_event(agent_name, ROSTER_KIND, text, at=at).seq
+        seq = self.append_event(agent_name, ROSTER_KIND, text, at=at).seq
+        self._roster_appends += 1
+        if self._roster_appends % ROSTER_TRIM_EVERY == 0:
+            self.trim_roster_events()
+        return seq
+
+    def trim_roster_events(self, *, keep: int = MAX_ROSTER_TICKS) -> int:
+        """Drop all but the newest `keep` roster ticks.
+
+        This is NOT the automatic retention §3 rules out. That decision is about
+        his history -- the events, phases and conversations a purge exists to
+        delete deliberately -- and none of it is touched here. Roster ticks are
+        machine noise: a busy box with the app listening writes one every few
+        seconds, forever, and they carry nothing that is not recomputable from
+        the roster itself.
+
+        A client whose cursor falls behind the trimmed window over-invalidates
+        rather than under-invalidating: it still sees every remaining tick, so
+        the worst case is one refetch too many, which is the safe direction.
+        """
+        with self._lock:
+            cutoff = self.db.execute(
+                "SELECT MIN(seq) AS seq FROM "
+                "(SELECT seq FROM events WHERE kind = ? ORDER BY seq DESC LIMIT ?)",
+                (ROSTER_KIND, keep),
+            ).fetchone()["seq"]
+            if cutoff is None:
+                return 0
+            cur = self.db.execute(
+                "DELETE FROM events WHERE kind = ? AND seq < ?", (ROSTER_KIND, cutoff)
+            )
+            self.db.commit()
+        return cur.rowcount
 
     def roster_since(self, cursor: int, *, limit: int = MAX_PAGE) -> list[StoredEvent]:
         return self._rows(
