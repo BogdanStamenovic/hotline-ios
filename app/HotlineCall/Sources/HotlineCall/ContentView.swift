@@ -2,7 +2,9 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(Store.self) private var store
+    @Environment(Server.self) private var server
     @State private var draft = ""
+    @State private var changingServer = false
     @FocusState private var writing: Bool
 
     var body: some View {
@@ -20,9 +22,51 @@ struct ContentView: View {
             }
             .navigationTitle("Hotline")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                // Without this a typo in the address strands him: the app would
+                // sit on a screen that only ever times out, with no way back to
+                // the one setting that fixes it.
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { changingServer = true } label: {
+                        Image(systemName: "server.rack")
+                    }
+                }
+            }
+            .sheet(isPresented: $changingServer) { ServerSheet() }
             .task { await store.refresh() }
             .refreshable { await store.refresh() }
             .animation(.snappy, value: store.currentTool)
+        }
+    }
+}
+
+private struct ServerSheet: View {
+    @Environment(Server.self) private var server
+    @Environment(\.dismiss) private var dismiss
+    @State private var typed = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("archserver") {
+                    TextField("100.x.y.z or archserver", text: $typed)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                }
+            }
+            .navigationTitle("Server")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { server.address = typed; dismiss() }
+                        .disabled(typed.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .onAppear { typed = server.address }
         }
     }
 }
