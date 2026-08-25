@@ -893,3 +893,63 @@ several-fold. That is a measurement to take on the runner, not a guess — and t
 plain `xcodebuild`/SwiftPM and no xtool. That needs the app source in a repo,
 which is a decision of his rather than mine — the fallback workflow for it is
 written and deliberately unpushed.
+
+## HIS PHONE RANG
+
+2026-08-25, ~20:45. Verified on his actual handset, twice, with his own words:
+
+> Yep i got both calls. Its Perfect.
+
+> It ringed i declined
+
+And from this side, matching: `180 Ringing` → `200 Ok` on the one he answered,
+`486` in 4.4 s on the one he declined. Two-sided confirmation, not an inference.
+
+The last of those ran through the **shipped transport reading `.env`** — no
+arguments, no monkeypatching — so the thing that rang him is the thing that will
+ring him.
+
+### What was actually wrong, in the order it was found
+
+1. **REGISTER worked immediately.** The hand-written digest authenticated
+   against `sip.linphone.org` on the first try, which is what the RFC 2617
+   fixture bought.
+2. **The first INVITE got no response at all over UDP.** Not a 100, not a 407.
+3. **Over TLS the same INVITE produced a whole conversation:**
+   `407` → auth → `100 Trying` → **`110 Push sent`** → `488 Not acceptable here`.
+   `110 Push sent` is linphone.org's gateway confirming it had pushed his phone
+   — the mechanism this whole option rests on, observed working.
+4. **He saw "a call for a split second" and could not tell it from a
+   notification bug.** That is exactly what a `488` *after* a push looks like
+   from outside: the push wakes the phone, then the call collapses.
+5. **His client requires encrypted media.** Offering `RTP/SAVP` with an SDES
+   crypto line, and a real bound port instead of port 9 (discard), made it ring
+   properly.
+
+His instinct — *"Call again"* — is what produced the diagnosis. One more ring
+turned an ambiguous flicker into a reproducible failure.
+
+### A correction I had to make to myself within minutes
+
+I wrote **"linphone.org silently ignores INVITEs over UDP"** into the docstring
+*and* into a message to him, on the evidence of one silent attempt.
+
+**A later run over UDP rang his phone.** That refutes it.
+
+The likelier cause is duller and is a defect here rather than there: **SIP over
+UDP requires the client to retransmit an INVITE** (RFC 3261 timer A, 500 ms
+doubling), and this does not — so one lost datagram is indistinguishable from a
+server that never answers. TLS remains the default, now for a correct reason
+(TCP retransmits for us) rather than an invented one.
+
+Same failure shape as the Apple forums quote earlier: a single observation
+promoted to a general claim. The difference is that this one was caught by my
+own next run rather than by someone else.
+
+### Also fixed, and only reachable once he answered
+
+A `200 OK` is now **ACKed, and the call ended with BYE rather than CANCEL.**
+CANCEL after a final response is invalid. Until tonight the code had never
+reached a 200, so CANCEL had always been right.
+
+**73 tests, ruff clean, mypy clean.**
