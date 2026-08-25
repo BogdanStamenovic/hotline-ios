@@ -1,0 +1,27 @@
+[Unit]
+Description=hotline-iosd (rings Bogdan's phone, serves the delegation app)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/bodas/data/hotline-ios/server
+# hotline is imported over PYTHONPATH rather than installed: the delegation path
+# uses its router, registry and HTTP server but none of its ML dependencies, so
+# this runs in its own light venv and reads hotline's source in place.
+Environment=PYTHONPATH=/home/bodas/data/hotline/src:/home/bodas/data/hotline-ios/server/src
+# The doorbells, tried in order. "We will do both" is his instruction and this
+# is the whole of it -- adding or reordering a ring transport is this line.
+Environment=HOTLINE_IOS_RING=telegram
+EnvironmentFile=-/home/bodas/data/hotline-ios/.env
+ExecStart=/home/bodas/data/hotline-ios/server/.venv/bin/python -m hotline_ios.daemon \
+  --host 100.72.2.62 --port 8789
+Restart=always
+RestartSec=5
+# The same reason hotlined has it, and it is not optional: without it a restart
+# of this unit can take the tmux server -- and therefore every live Claude
+# session on the box -- down with it. See hotline's handoff for the incident.
+KillMode=process
+
+[Install]
+WantedBy=default.target
