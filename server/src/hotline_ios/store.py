@@ -1,0 +1,688 @@
+"""Durable state for the daemon: agents, conversations, events, phases.
+
+Everything the daemon knew used to live in a dict and die with the process. That
+was survivable while a conversation was a thing you answered within a minute; it
+stops being survivable the moment the phone wants *history* -- a channel per
+agent, scrollable backwards, that outlives a restart of a daemon nobody watches.
+
+**SQLite, stdlib, WAL.** No new dependency, ordered and indexed queries for free,
+and single-writer/many-reader is exactly the shape of this process. It lives
+under the same `XDG_STATE_HOME` convention hotline's `Registry` already uses, so
+whatever backs that up picks this up too without a special case.
+
+**One global `seq`.** The load-bearing decision. `EventLog` numbered events per
+conversation; this numbers them once across every agent and every conversation.
+History and the live feed then become the same `WHERE seq > ?` against one
+table, so "no gap, no duplicate" is a property of `>` on a primary key rather
+than something the client has to reconcile. It also means a purge can leave
+holes in the sequence and nothing breaks -- holes are fine, reordering is not.
+
+**Roster ticks share that sequence** rather than getting a table of their own.
+They are stored as events with `kind = "roster"` and no conversation, and every
+transcript-facing query filters that kind out. The alternative was a second
+sequence the client would have to hold a second cursor for, to solve a problem
+the first cursor already solves.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import sqlite3
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+log = logging.getLogger("hotline-iosd.store")
+
+ROSTER_KIND = "roster"
+"""Reserved `events.kind`. Carries roster invalidation ticks on the same global
+sequence as everything else; excluded from every transcript-facing query."""
+
+UNATTRIBUTED = "(unattributed)"
+"""Where a conversation goes when nothing named an agent.
+
+`hotline-call --agent` defaults to None, so this is not an edge case, it is the
+common case for a plain ring. The row still has to go somewhere -- dropping it
+would lose the question he is about to answer -- and a reserved name that cannot
+collide with a registry name (`hotline-80`, `data-88`) is better than a NULL
+that every query then has to special-case. It is filtered out of the roster: it
+is a bucket, not an agent."""
+
+MAX_PAGE = 200
+"""Ceiling on `history(limit=)`. §6 of the plan; also stops one request from
+pulling a hundred thousand rows into a phone."""
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS agents (
+  name TEXT PRIMARY KEY,
+  session_id TEXT,
+  task TEXT, cwd TEXT,
+  declared_at REAL, completed_at REAL,
+  last_tool_at REAL,
+  retired_at REAL,
+  history_generation INTEGER NOT NULL DEFAULT 0,
+  transcript_offset INTEGER NOT NULL DEFAULT 0,
+  updated_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS conversations (
+  id TEXT PRIMARY KEY,
+  agent_name TEXT NOT NULL REFERENCES agents(name),
+  kind TEXT NOT NULL,
+  opened_at REAL NOT NULL, closed_at REAL,
+  waiting_since REAL,
+  answered INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT REFERENCES conversations(id),
+  agent_name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  phase_id TEXT,
+  tool TEXT, text TEXT NOT NULL,
+  via_subagent INTEGER NOT NULL DEFAULT 0,
+  at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS events_agent_seq ON events(agent_name, seq);
+CREATE INDEX IF NOT EXISTS events_conversation_seq ON events(conversation_id, seq);
+
+CREATE TABLE IF NOT EXISTS phases (
+  id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, conversation_id TEXT,
+  title TEXT NOT NULL, outcome TEXT,
+  started_at REAL NOT NULL, ended_at REAL
+);
+CREATE INDEX IF NOT EXISTS phases_agent ON phases(agent_name, started_at);
+"""
+
+
+@dataclass(frozen=True)
+class StoredEvent:
+    seq: int
+    conversation_id: str | None
+    agent_name: str
+    kind: str
+    phase_id: str | None
+    tool: str | None
+    text: str
+    via_subagent: bool
+    at: float
+
+    def as_json(self) -> dict[str, Any]:
+        """The wire shape `/api/v1/events` has always returned.
+
+        Byte-for-byte the same keys `events.Entry.as_json` produces, because the
+        app installed on his phone decodes exactly these and a reinstall costs a
+        7-day provisioning profile.
+        """
+        out: dict[str, Any] = {"seq": self.seq, "kind": self.kind, "text": self.text, "at": self.at}
+        if self.tool:
+            out["tool"] = self.tool
+        return out
+
+    def as_agent_json(self) -> dict[str, Any]:
+        """The same event on an agent-scoped feed, which interleaves sources.
+
+        A ring's Q&A, a delegated `say` and (once the hook lands) tool events all
+        share one channel, so a row has to be able to say which conversation it
+        came from and whether a subagent produced it.
+        """
+        out = self.as_json()
+        out["agent"] = self.agent_name
+        if self.conversation_id:
+            out["conversation"] = self.conversation_id
+        if self.via_subagent:
+            out["viaSubagent"] = True
+        if self.phase_id:
+            out["phase"] = self.phase_id
+        return out
+
+
+def default_path() -> Path:
+    """Beside hotline's `agents.json`, by the same rules.
+
+    Asks hotline for the directory when hotline is importable so the two cannot
+    drift, and falls back to reimplementing the three lines when it is not --
+    this package is tested without hotline on the path.
+    """
+    override = os.environ.get("HOTLINE_IOS_DB")
+    if override:
+        return Path(override)
+    try:
+        from hotline.config import state_dir
+
+        return Path(state_dir()) / "hotline-ios.db"
+    except Exception:  # noqa: BLE001 - hotline is a PYTHONPATH dependency, not an installed one
+        env = os.environ.get("HOTLINE_STATE")
+        if env:
+            return Path(env) / "hotline-ios.db"
+        xdg = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
+        return Path(xdg) / "hotline" / "hotline-ios.db"
+
+
+class Store:
+    """The durable half of the daemon. Synchronous on purpose.
+
+    Every query here is a primary-key or covered-index lookup against a database
+    measured in megabytes, on the same box. Wrapping that in `to_thread` would
+    add a context switch per event to save microseconds of loop time, and would
+    hand a single-writer database to a thread pool for no reason.
+
+    The lock is not for that. It is because the HTTP handlers run on the event
+    loop while tests drive the store from the main thread and `sqlite3` objects
+    are not free-threaded; `check_same_thread=False` plus one lock is the
+    smallest correct answer.
+    """
+
+    def __init__(self, path: str | Path | None = None) -> None:
+        self.path = Path(path) if path is not None else default_path()
+        self._lock = threading.RLock()
+        if str(self.path) != ":memory:":
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(str(self.path), check_same_thread=False, timeout=5.0)
+        self.db.row_factory = sqlite3.Row
+        with self._lock:
+            # WAL is meaningless in memory and PRAGMA does not raise for it, so
+            # this is a no-op rather than a special case.
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.execute("PRAGMA synchronous=NORMAL")
+            # ON by choice: an event attributed to an agent row that does not
+            # exist is a bug in this file, and it should surface here rather
+            # than as an empty feed three days later.
+            self.db.execute("PRAGMA foreign_keys=ON")
+            self.db.executescript(SCHEMA)
+            self.db.commit()
+
+    def close(self) -> None:
+        with self._lock:
+            self.db.close()
+
+    # ---- agents ----------------------------------------------------------
+
+    def ensure_agent(self, name: str, **fields: Any) -> None:
+        """Make sure a row exists for `name`, then update whatever was supplied.
+
+        Upsert rather than insert-or-ignore: the roster learns an agent's
+        session, task and cwd at different moments from different sources, and
+        the first one to arrive must not pin the rest to NULL forever.
+        """
+        known = {"session_id", "task", "cwd", "declared_at", "completed_at",
+                 "last_tool_at", "transcript_offset"}
+        unknown = set(fields) - known
+        if unknown:
+            raise ValueError(f"ensure_agent got unknown fields: {sorted(unknown)}")
+        now = time.time()
+        with self._lock:
+            self.db.execute(
+                "INSERT INTO agents (name, declared_at, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(name) DO NOTHING",
+                (name, now, now),
+            )
+            supplied = {k: v for k, v in fields.items() if v is not None}
+            if supplied:
+                assignments = ", ".join(f"{k} = ?" for k in supplied)
+                self.db.execute(
+                    f"UPDATE agents SET {assignments}, updated_at = ? WHERE name = ?",
+                    (*supplied.values(), now, name),
+                )
+            self.db.commit()
+
+    def agent(self, name: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.db.execute("SELECT * FROM agents WHERE name = ?", (name,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def agents(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.db.execute("SELECT * FROM agents ORDER BY name").fetchall()
+        return [dict(row) for row in rows]
+
+    def set_retired(self, name: str, retired: bool) -> float | None:
+        """Flip visibility. Reversible, destroys nothing, orthogonal to liveness.
+
+        Returns the new `retired_at`, so a caller can report what actually
+        happened rather than echoing what it asked for.
+        """
+        at = time.time() if retired else None
+        with self._lock:
+            self.ensure_agent(name)
+            self.db.execute(
+                "UPDATE agents SET retired_at = ?, updated_at = ? WHERE name = ?",
+                (at, time.time(), name),
+            )
+            self.db.commit()
+        return at
+
+    def set_last_tool_at(self, name: str, at: float) -> None:
+        with self._lock:
+            self.ensure_agent(name)
+            self.db.execute(
+                "UPDATE agents SET last_tool_at = ?, updated_at = ? WHERE name = ?",
+                (at, time.time(), name),
+            )
+            self.db.commit()
+
+    def history_generation(self, name: str) -> int:
+        row = self.agent(name)
+        return int(row["history_generation"]) if row else 0
+
+    # ---- conversations ---------------------------------------------------
+
+    def open_conversation(
+        self,
+        conversation_id: str,
+        agent_name: str,
+        kind: str,
+        *,
+        opened_at: float | None = None,
+        waiting_since: float | None = None,
+    ) -> None:
+        opened_at = time.time() if opened_at is None else opened_at
+        with self._lock:
+            self.ensure_agent(agent_name)
+            self.db.execute(
+                "INSERT OR REPLACE INTO conversations "
+                "(id, agent_name, kind, opened_at, closed_at, waiting_since, answered) "
+                "VALUES (?, ?, ?, ?, NULL, ?, 0)",
+                (conversation_id, agent_name, kind, opened_at, waiting_since),
+            )
+            self.db.commit()
+
+    def close_conversation(self, conversation_id: str, *, at: float | None = None) -> bool:
+        """Mark a conversation ended. Idempotent -- a second close is not an error."""
+        with self._lock:
+            cur = self.db.execute(
+                "UPDATE conversations SET closed_at = ?, waiting_since = NULL "
+                "WHERE id = ? AND closed_at IS NULL",
+                (time.time() if at is None else at, conversation_id),
+            )
+            self.db.commit()
+        return cur.rowcount > 0
+
+    def mark_answered(self, conversation_id: str) -> None:
+        """He replied. The agent is no longer blocked on him, whatever else is true."""
+        with self._lock:
+            self.db.execute(
+                "UPDATE conversations SET answered = 1, waiting_since = NULL WHERE id = ?",
+                (conversation_id,),
+            )
+            self.db.commit()
+
+    def conversation(self, conversation_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.db.execute(
+                "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def conversations(
+        self, *, agent: str | None = None, since: float | None = None, limit: int = MAX_PAGE
+    ) -> list[dict[str, Any]]:
+        """Newest first, which is the order every caller wants them in."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if agent is not None:
+            clauses.append("agent_name = ?")
+            params.append(agent)
+        if since is not None:
+            clauses.append("opened_at >= ?")
+            params.append(since)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        with self._lock:
+            rows = self.db.execute(
+                f"SELECT * FROM conversations {where} ORDER BY opened_at DESC LIMIT ?", params
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def blocked_since(self) -> dict[str, float]:
+        """agent -> when it first started waiting on him, across open conversations.
+
+        The earliest, not the latest: an agent blocked on two questions has been
+        blocked since the first one, and showing the second would under-report
+        exactly the number the pin exists to make loud.
+        """
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT agent_name, MIN(waiting_since) AS since FROM conversations "
+                "WHERE closed_at IS NULL AND answered = 0 AND waiting_since IS NOT NULL "
+                "GROUP BY agent_name"
+            ).fetchall()
+        return {row["agent_name"]: float(row["since"]) for row in rows}
+
+    # ---- events ----------------------------------------------------------
+
+    def append_event(
+        self,
+        agent_name: str,
+        kind: str,
+        text: str,
+        *,
+        conversation_id: str | None = None,
+        tool: str | None = None,
+        phase_id: str | None = None,
+        via_subagent: bool = False,
+        at: float | None = None,
+    ) -> StoredEvent:
+        at = time.time() if at is None else at
+        with self._lock:
+            self.ensure_agent(agent_name)
+            cur = self.db.execute(
+                "INSERT INTO events "
+                "(conversation_id, agent_name, kind, phase_id, tool, text, via_subagent, at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (conversation_id, agent_name, kind, phase_id, tool, text, int(via_subagent), at),
+            )
+            self.db.commit()
+            seq = int(cur.lastrowid or 0)
+        return StoredEvent(
+            seq=seq,
+            conversation_id=conversation_id,
+            agent_name=agent_name,
+            kind=kind,
+            phase_id=phase_id,
+            tool=tool,
+            text=text,
+            via_subagent=via_subagent,
+            at=at,
+        )
+
+    def _rows(self, sql: str, params: Any) -> list[StoredEvent]:
+        with self._lock:
+            rows = self.db.execute(sql, params).fetchall()
+        return [
+            StoredEvent(
+                seq=int(row["seq"]),
+                conversation_id=row["conversation_id"],
+                agent_name=row["agent_name"],
+                kind=row["kind"],
+                phase_id=row["phase_id"],
+                tool=row["tool"],
+                text=row["text"],
+                via_subagent=bool(row["via_subagent"]),
+                at=float(row["at"]),
+            )
+            for row in rows
+        ]
+
+    def since(self, agent: str, cursor: int, *, limit: int = 500) -> list[StoredEvent]:
+        """Everything an agent has produced after `cursor`, oldest first."""
+        return self._rows(
+            "SELECT * FROM events WHERE agent_name = ? AND seq > ? AND kind != ? "
+            "ORDER BY seq LIMIT ?",
+            (agent, cursor, ROSTER_KIND, limit),
+        )
+
+    def conversation_events(
+        self, conversation_id: str, cursor: int = 0, *, limit: int = 500
+    ) -> list[StoredEvent]:
+        return self._rows(
+            "SELECT * FROM events WHERE conversation_id = ? AND seq > ? AND kind != ? "
+            "ORDER BY seq LIMIT ?",
+            (conversation_id, cursor, ROSTER_KIND, limit),
+        )
+
+    def conversation_tail(self, conversation_id: str, *, limit: int = 500) -> list[StoredEvent]:
+        """The newest `limit` events of a conversation, returned oldest first.
+
+        What rehydrating an in-memory index after a restart needs: the recent
+        end of a long conversation, in reading order.
+        """
+        newest = self._rows(
+            "SELECT * FROM events WHERE conversation_id = ? AND kind != ? "
+            "ORDER BY seq DESC LIMIT ?",
+            (conversation_id, ROSTER_KIND, limit),
+        )
+        return list(reversed(newest))
+
+    def history(
+        self, agent: str, *, before: int | None = None, limit: int = 100
+    ) -> tuple[list[StoredEvent], bool]:
+        """A page of an agent's past, oldest first, walking backwards.
+
+        Returns `(events, has_more)`. `before` is exclusive, so paging is
+        `before = oldest_seq` of the page you just got and there is no
+        off-by-one to get wrong at either end.
+        """
+        limit = max(1, min(int(limit), MAX_PAGE))
+        # limit+1 rather than a second COUNT query: one scan answers both "the
+        # page" and "is there anything behind it".
+        if before is None:
+            rows = self._rows(
+                "SELECT * FROM events WHERE agent_name = ? AND kind != ? "
+                "ORDER BY seq DESC LIMIT ?",
+                (agent, ROSTER_KIND, limit + 1),
+            )
+        else:
+            rows = self._rows(
+                "SELECT * FROM events WHERE agent_name = ? AND seq < ? AND kind != ? "
+                "ORDER BY seq DESC LIMIT ?",
+                (agent, before, ROSTER_KIND, limit + 1),
+            )
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        return list(reversed(page)), has_more
+
+    def latest_seq(self) -> int:
+        with self._lock:
+            row = self.db.execute("SELECT MAX(seq) AS seq FROM events").fetchone()
+        return int(row["seq"] or 0)
+
+    # ---- roster ticks ----------------------------------------------------
+
+    def append_roster_event(self, agent_name: str, text: str, *, at: float | None = None) -> int:
+        return self.append_event(agent_name, ROSTER_KIND, text, at=at).seq
+
+    def roster_since(self, cursor: int, *, limit: int = MAX_PAGE) -> list[StoredEvent]:
+        return self._rows(
+            "SELECT * FROM events WHERE kind = ? AND seq > ? ORDER BY seq LIMIT ?",
+            (ROSTER_KIND, cursor, limit),
+        )
+
+    def latest_roster_seq(self) -> int:
+        with self._lock:
+            row = self.db.execute(
+                "SELECT MAX(seq) AS seq FROM events WHERE kind = ?", (ROSTER_KIND,)
+            ).fetchone()
+        return int(row["seq"] or 0)
+
+    # ---- deletion, the only kind there is --------------------------------
+
+    def purge(
+        self,
+        agent: str,
+        *,
+        scope: str = "history",
+        conversation_id: str | None = None,
+        before_seq: int | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Real `DELETE`, not tombstones. "Delete their fields" is not satisfied
+        by hiding text.
+
+        Exactly one primitive with two optional filters, per §3:
+
+        * `conversation_id` -- restrict to one conversation. Its row goes too,
+          unless `before_seq` also narrows the range, in which case what is left
+          of it is still a conversation.
+        * `before_seq` -- exclusive. Events with a smaller `seq` go; phases that
+          had already ended by that point go; a conversation row goes only when
+          it is closed and nothing is left in it, because an open conversation
+          with no events is still one he can answer.
+        * neither -- everything of that agent's.
+
+        `scope="everything"` additionally drops the agent row, and is **refused**
+        rather than downgraded when a filter is present: dropping the identity
+        while keeping some of its events would leave rows pointing at nothing.
+
+        The `seq` sequence tolerates the holes this leaves. Clients find out via
+        `history_generation`, which every real purge bumps.
+        """
+        if scope not in ("history", "everything"):
+            raise ValueError(f"unknown purge scope {scope!r}")
+        if scope == "everything" and (conversation_id or before_seq):
+            raise ValueError(
+                "scope='everything' cannot be narrowed by conversation_id or before_seq -- "
+                "dropping the agent while keeping some of its rows would orphan them"
+            )
+
+        event_where = ["agent_name = ?"]
+        event_params: list[Any] = [agent]
+        if conversation_id:
+            event_where.append("conversation_id = ?")
+            event_params.append(conversation_id)
+        if before_seq is not None:
+            event_where.append("seq < ?")
+            event_params.append(int(before_seq))
+        event_clause = " AND ".join(event_where)
+
+        with self._lock:
+            counts = self.db.execute(
+                f"SELECT COUNT(*) AS n, MIN(at) AS oldest FROM events WHERE {event_clause}",
+                event_params,
+            ).fetchone()
+            events_hit = int(counts["n"])
+            oldest_at = counts["oldest"]
+
+            # Phases are bounded by wall-clock rather than by seq because they
+            # have no seq of their own. `before_seq` is resolved to the moment
+            # that event happened; a phase still running at that moment stays.
+            cutoff_at: float | None = None
+            if before_seq is not None:
+                row = self.db.execute(
+                    "SELECT MAX(at) AS at FROM events WHERE seq < ?", (int(before_seq),)
+                ).fetchone()
+                cutoff_at = row["at"]
+
+            phase_where = ["agent_name = ?"]
+            phase_params: list[Any] = [agent]
+            if conversation_id:
+                phase_where.append("conversation_id = ?")
+                phase_params.append(conversation_id)
+            if before_seq is not None:
+                # No resolvable cutoff means no phase can be proven old enough.
+                phase_where.append("(ended_at IS NOT NULL AND ended_at < ?)")
+                phase_params.append(cutoff_at if cutoff_at is not None else float("-inf"))
+            phase_clause = " AND ".join(phase_where)
+            phases_hit = int(
+                self.db.execute(
+                    f"SELECT COUNT(*) AS n FROM phases WHERE {phase_clause}", phase_params
+                ).fetchone()["n"]
+            )
+
+            conversations_hit, conversation_ids = self._conversations_to_drop(
+                agent, conversation_id, before_seq
+            )
+
+            if dry_run:
+                return {
+                    "agent": agent,
+                    "scope": scope,
+                    "dry_run": True,
+                    "conversations": conversations_hit,
+                    "events": events_hit,
+                    "phases": phases_hit,
+                    "oldest_at": oldest_at,
+                    "agent_removed": False,
+                    "history_generation": self.history_generation(agent),
+                }
+
+            self.db.execute(f"DELETE FROM events WHERE {event_clause}", event_params)
+            self.db.execute(f"DELETE FROM phases WHERE {phase_clause}", phase_params)
+            for cid in conversation_ids:
+                self.db.execute("DELETE FROM conversations WHERE id = ?", (cid,))
+
+            agent_removed = False
+            if scope == "everything":
+                self.db.execute("DELETE FROM agents WHERE name = ?", (agent,))
+                agent_removed = self.db.execute(
+                    "SELECT COUNT(*) AS n FROM agents WHERE name = ?", (agent,)
+                ).fetchone()["n"] == 0
+                generation = 0
+            else:
+                self.db.execute(
+                    "UPDATE agents SET history_generation = history_generation + 1, "
+                    "updated_at = ? WHERE name = ?",
+                    (time.time(), agent),
+                )
+                row = self.db.execute(
+                    "SELECT history_generation AS g FROM agents WHERE name = ?", (agent,)
+                ).fetchone()
+                generation = int(row["g"]) if row else 0
+            self.db.commit()
+
+        return {
+            "agent": agent,
+            "scope": scope,
+            "dry_run": False,
+            "conversations": conversations_hit,
+            "events": events_hit,
+            "phases": phases_hit,
+            "oldest_at": oldest_at,
+            "agent_removed": agent_removed,
+            "history_generation": generation,
+        }
+
+    def _conversations_to_drop(
+        self, agent: str, conversation_id: str | None, before_seq: int | None
+    ) -> tuple[int, list[str]]:
+        """Which conversation rows a purge takes with it. Caller holds the lock."""
+        if conversation_id and before_seq is None:
+            rows = self.db.execute(
+                "SELECT id FROM conversations WHERE agent_name = ? AND id = ?",
+                (agent, conversation_id),
+            ).fetchall()
+        elif conversation_id:
+            # Narrowed within one conversation: what is left of it is still a
+            # conversation, so the row stays.
+            return 0, []
+        elif before_seq is None:
+            rows = self.db.execute(
+                "SELECT id FROM conversations WHERE agent_name = ?", (agent,)
+            ).fetchall()
+        else:
+            rows = self.db.execute(
+                "SELECT c.id AS id FROM conversations c WHERE c.agent_name = ? "
+                "AND c.closed_at IS NOT NULL AND NOT EXISTS ("
+                "  SELECT 1 FROM events e WHERE e.conversation_id = c.id AND e.seq >= ?)",
+                (agent, int(before_seq)),
+            ).fetchall()
+        ids = [str(row["id"]) for row in rows]
+        return len(ids), ids
+
+    # ---- what /health is allowed to claim --------------------------------
+
+    def stats(self) -> dict[str, Any]:
+        """Only what was actually checked this call.
+
+        `db_ok` is a real query, not the absence of an exception at boot: a
+        database that has since gone read-only, been deleted underneath us or
+        run the disk out has to read as not-ok here or this endpoint is lying in
+        exactly the way it exists to stop.
+        """
+        out: dict[str, Any] = {"db_ok": False, "db_bytes": None, "disk_free": None}
+        try:
+            with self._lock:
+                self.db.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+            out["db_ok"] = True
+        except Exception as exc:  # noqa: BLE001 - the whole point is to report, not raise
+            out["db_error"] = f"{type(exc).__name__}: {exc}"
+            return out
+        try:
+            total = 0
+            for suffix in ("", "-wal", "-shm"):
+                candidate = Path(str(self.path) + suffix)
+                if candidate.is_file():
+                    total += candidate.stat().st_size
+            out["db_bytes"] = total
+        except OSError as exc:
+            out["db_error"] = str(exc)
+        try:
+            out["disk_free"] = shutil.disk_usage(self.path.parent).free
+        except OSError as exc:
+            out["db_error"] = str(exc)
+        return out
