@@ -111,3 +111,32 @@ consider SideStore afterwards purely as a convenience for the weekly re-sign.
 - The app has never run on a device, so nothing about its behaviour on iOS is
   verified — only that it parses, and that `Model.swift` type-checks on Linux.
 - xtool's `install`/`launch` path has never been exercised from this box.
+
+## Sideloading from the Arch laptop instead (his idea, and a better one)
+
+He asked whether the app could be beamed to his laptop so he could sideload
+from there. It can, and it is strictly better: the phone and the laptop are in
+the same place, whereas archserver is a machine he has to walk to.
+
+It also turns out the laptop needs **almost nothing**. Signing and installing
+need the Apple ID and the phone; they do **not** need the Swift toolchain or
+the 3.1 GB Darwin SDK. Tested with a clean `HOME` so no SDK was visible:
+`xtool install` never mentioned one and went straight to looking for a device.
+
+    curl -fsSL http://100.72.2.62:8790/sideload.sh -o /tmp/s.sh   # served on the tailnet
+    # or fetch all four files and run ./sideload.sh
+
+`tools/sideload.sh` is the script, and it does the whole thing: checks
+prerequisites, logs in if needed, signs, installs. What it needs on the laptop:
+
+- `usbmuxd` and `libimobiledevice` (`sudo pacman -S usbmuxd libimobiledevice`)
+- an `xtool auth login` **on that machine** — the token on archserver is a
+  credential and does not travel
+
+### One trap the script exists to prevent
+
+`xtool install` with no phone attached prints **nothing** and blocks
+indefinitely — no error, no timeout. Verified on archserver. The script checks
+for the device with `idevice_id` first, which is the only reason that silent
+hang becomes a readable message. `libimobiledevice` is therefore a hard
+requirement rather than a nicety.
