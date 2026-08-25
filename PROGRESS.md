@@ -575,3 +575,57 @@ suite runs in one venv, no GPU, no models — a consequence of the voice route
 going, not a goal.
 
 54 tests, ~2 s.
+
+## State at the end of this stretch
+
+**54 tests, ruff clean, mypy clean, one venv, no ML dependencies.**
+
+`mypy` found a real packaging bug that runtime never would have:
+`src/hotline_ios/` had **no `__init__.py`** and had been working purely as an
+implicit namespace package the whole day.
+
+The broad `except Exception` clauses that are deliberate now say why on the
+`noqa`, matching hotline's practice. One of them was genuinely sloppy rather
+than deliberate: `ConfirmedRing` swallowed a cancelled transport's own exception
+with a bare `pass`, which is how a transport bug stays invisible.
+
+### The one place my chosen evidence is not evidence
+
+`data-89` found it, and it goes in the code rather than in a chat message
+because whoever hits it will be reading the code.
+
+`TelegramTransport` treats "Telegram accepted the call request" as proof the
+phone is alerting — that is what `ConfirmedRing` waits on. **If his
+Settings → Privacy → Calls is "Nobody", Telegram accepts the request and never
+rings him**, and nothing in the response distinguishes that from success. So the
+confirmation would report a ring that did not happen, which is precisely the
+failure `ConfirmedRing` exists to prevent.
+
+It cannot be closed from inside the transport. It has to be checked on his phone
+once.
+
+### What my accidental page cost, and what it bought
+
+`hotline-80` found that the retraction had a hole *its own module* created: I
+retracted in my channel, but his "Nope" is in `#general` and carries no
+`message_reference`. So a verified, quotable, provenance-checkable message from
+him reading "Nope" was sitting there **attached to nothing**, on the subject of
+spending money — and `hotline --provenance` would confirm it verbatim with no
+indication that it answered a question nobody asked.
+
+Its fix (commit `8dd8c14`): a verdict now reports context, quoting the
+referenced message when there is one and warning explicitly when a short message
+is not a reply to anything. Its own summary of the underlying defect is the
+useful sentence: **a reply's meaning lives in its question, and the question was
+never part of the receipt.**
+
+So the mistake was mine and the defect was older than the mistake.
+
+### Two things worth not re-learning
+
+- **Each Bash call here is a fresh shell, so `kill %1` refers to nothing.** Job
+  control does not survive between tool calls. That is what left a stale daemon
+  holding the port (making new routes look missing) and a stale `hotline-call`
+  alive long enough to page him.
+- **`pkill -f <pattern>` matches the shell command containing the pattern**, so
+  it kills its own invocation. Exit 144, twice, before I stopped using it.
