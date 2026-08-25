@@ -739,3 +739,52 @@ a fixture rather than a live call so the suite stays offline.
 account, and the INVITE reaching his handset needs his phone.
 
 **70 tests.**
+
+## The SDK build failed, and the failure was mine twice over
+
+**Attempt 1 ran for 90 minutes 15 seconds, produced zero output, and was killed
+by its own `timeout-minutes: 90`.** Not a crash, not a GitHub problem — my
+workflow's timeout, reached.
+
+Reading the completed log rather than guessing gave two faults, both mine:
+
+### 1. I called the wrong subcommand
+
+xtool's own help, which I had already captured hours earlier and did not read
+carefully enough:
+
+```
+install (default)   Install the Darwin Swift SDK   <path>  Path to Xcode.xip or Xcode.app
+build               Build the Darwin SDK from Xcode.xip
+```
+
+**`build` takes a `.xip`. `install` takes a `.xip` *or* an `Xcode.app`.** I ran
+`xtool sdk build /Applications/Xcode.app` — the one combination that is not
+offered. The `|| xtool sdk install` fallback never ran, because `build` never
+exited.
+
+### 2. There was no instrumentation, so 90 minutes of silence meant nothing
+
+The step emitted exactly one line in an hour and a half: the command itself.
+That makes "extracting something enormous" and "hung on the first syscall"
+indistinguishable, and I had no way to tell which. **A long-running step with no
+progress output is a workflow I wrote badly**, independent of the wrong
+subcommand.
+
+### Also wrong, and worth noting
+
+`/Applications/Xcode.app` on the runner points at **16.4**. xtool's docs say
+Xcode 26 — and the runner carries everything from 16.0 to **26.3**. So even had
+the subcommand been right, it would have built an SDK from the wrong Xcode.
+
+### Attempt 2
+
+- `xtool sdk install`, explicitly against `/Applications/Xcode_26.3.app`
+- a watcher printing elapsed time, free disk and output size every 60 s
+- `script(1)` to give xtool a pty, since printing nothing when piped is the
+  usual cause of exactly that silence
+- `timeout-minutes: 180`
+- `sdk install --help` echoed into the log first, so the next person does not
+  have to trust my reading of it
+
+If it fails again, it will now say *how*.
