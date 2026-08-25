@@ -1,7 +1,16 @@
 import Foundation
 
+// The module is main-actor-by-default (see Package.swift), which would make
+// these types' synthesised Codable conformances main-actor-isolated too. They
+// are decoded on `Link`, which is nonisolated, so the conformance has to be as
+// well -- otherwise `JSONDecoder().decode` cannot see it from off the actor.
+// These are pure wire data with no UI state, so `nonisolated` is also just the
+// truthful annotation. `Delivery` is deliberately NOT in this set: it is view
+// state, it never crosses the network boundary, and the main actor is where it
+// belongs.
+
 /// A Claude Code session he can talk to, as hotline's registry knows it.
-struct Agent: Identifiable, Hashable, Sendable, Codable {
+nonisolated struct Agent: Identifiable, Hashable, Sendable, Codable {
     let name: String
     let task: String
     let cwd: String
@@ -15,7 +24,7 @@ struct Agent: Identifiable, Hashable, Sendable, Codable {
 ///
 /// A value type with no reference storage, so it is `Sendable` for free and
 /// crosses from the network task to the main actor without ceremony.
-struct Moment: Identifiable, Hashable, Sendable {
+nonisolated struct Moment: Identifiable, Hashable, Sendable {
     enum Kind: String, Codable, Sendable {
         case you        // what he sent
         case claude     // what the agent answered
@@ -53,7 +62,7 @@ enum Delivery: Equatable, Sendable {
 /// tracking conversations it started itself; without this the question sits
 /// there and cannot be found, which is exactly what happened the first time the
 /// round trip was run.
-struct Waiting: Identifiable, Hashable, Sendable, Codable {
+nonisolated struct Waiting: Identifiable, Hashable, Sendable, Codable {
     let conversation: String
     let opened: Double
     let asked: String
@@ -65,7 +74,7 @@ struct Waiting: Identifiable, Hashable, Sendable, Codable {
     var at: Date { Date(timeIntervalSince1970: opened) }
 }
 
-struct ServerEvent: Codable, Sendable {
+nonisolated struct ServerEvent: Codable, Sendable {
     let seq: Int
     let kind: String
     let text: String
@@ -73,7 +82,7 @@ struct ServerEvent: Codable, Sendable {
     let at: Double
 }
 
-struct EventPage: Codable, Sendable {
+nonisolated struct EventPage: Codable, Sendable {
     let events: [ServerEvent]
     let cursor: Int
     let closed: Bool

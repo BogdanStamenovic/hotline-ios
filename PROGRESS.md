@@ -1139,3 +1139,41 @@ one away.
 **Still no binary.** Everything above is a build that failed. The honest state
 is: the SDK exists and is installed, the toolchain reaches SwiftUI, and the
 version mismatch has a named fix that has not yet been shown to work.
+
+## 2026-08-25, 21:45 — an iOS binary exists
+
+    $ file Payload/HotlineCall.app/HotlineCall
+    Mach-O 64-bit arm64 executable, flags:<NOUNDEFS|DYLDLINK|TWOLEVEL|PIE>
+
+    linked: SwiftUI, UIKit, Foundation, CoreFoundation
+    bundle: dev.stamenovic.hotlinecall, MinimumOSVersion 17.0, iPhoneOS
+    ipa   : 1.4 MB
+
+Built on Arch Linux. No Mac was involved at any point.
+
+Swapping 6.3.3 for **6.2.3** removed every SDK error at once -- the SwiftUI
+module failure and all 153 `arm_neon.h` errors were one problem, and the
+compiler had already named it. What remained was one error in my own code:
+
+    Link.swift:93: main actor-isolated conformance of 'EventPage' to
+                   'Decodable' cannot be used in nonisolated context
+
+The module is main-actor-by-default, so `EventPage`'s synthesised `Decodable`
+conformance was main-actor-isolated, while `Link` -- which does the decoding --
+is `nonisolated`. Marked the five wire types `nonisolated`. That is not a
+workaround for the diagnostic; those types are pure data crossing the network
+boundary and never touch UI, so it is the annotation that was always true.
+`Delivery` stays main-actor-isolated because it is view state and genuinely
+belongs there.
+
+### What this does and does not prove
+
+**Proves:** an iOS app can be built from this box. SPEC section 9.3 asked for
+exactly this as the single result that de-risks the rest, and it is now a file
+rather than a plan.
+
+**Does not prove:** that it runs. The binary has never been on a device. It is
+also **unsigned** -- no `LC_CODE_SIGNATURE` load command, no
+`embedded.mobileprovision` in the bundle, both checked rather than assumed.
+Signing needs his Apple ID and installing needs the phone paired once by cable;
+`docs/SIDELOADING.md` has both, and neither is something I can route around.
