@@ -713,3 +713,63 @@ def test_the_hook_exits_zero_when_nothing_is_listening(tmp_path, claude_home):
                           capture_output=True, timeout=20, check=False)
     assert done.returncode == 0
     assert done.stdout == b""
+
+
+def test_a_new_session_does_not_inherit_the_old_ones_byte_offset(tmp_path):
+    """Found on a real session, not reasoned about.
+
+    An agent outlives its sessions: `resume` gives it a new session id and a new
+    transcript, and re-spawning one by hand under the same name does too. The
+    offset is stored per agent and describes one specific file, so carrying it
+    over reads the new file from the old file's position -- past the end of a
+    shorter one, which is what happened: an agent respawned under the same name
+    ingested nothing at all afterwards and its channel went silent for good.
+
+    A byte offset into a different file is not a smaller kind of correct.
+    """
+    store = Store(tmp_path / "offsets.db")
+    store.set_read_position("hotline-80", 900, {"agent-a.jsonl": 40}, "session-one")
+
+    assert store.read_position("hotline-80", "session-one") == (900, {"agent-a.jsonl": 40})
+    assert store.read_position("hotline-80", "session-two") == (0, {})
+    # And the sidechain offsets go with it: those name files under the old
+    # session's directory and mean nothing under the new one.
+    store.set_read_position("hotline-80", 40, {}, "session-two")
+    assert store.read_position("hotline-80", "session-two") == (40, {})
+    store.close()
+
+
+def test_a_position_written_before_sessions_were_tracked_is_still_honoured(tmp_path):
+    """The database serving his phone has offsets in it that predate the column.
+    Treating an unknown session as a mismatch would replay every live agent's
+    transcript from scratch on the first read after the upgrade."""
+    store = Store(tmp_path / "legacy.db")
+    store.set_read_position("hotline-80", 512, {})
+
+    assert store.read_position("hotline-80", "whatever-session") == (512, {})
+    store.close()
+
+
+async def test_a_position_past_the_end_of_the_transcript_restarts_the_read(
+    claude_home, doubles
+):
+    """`_read_slice` seeks past EOF, reads nothing and leaves the offset where
+    it was, so this is not a slow channel -- it is one that has stopped forever
+    and says nothing about it.
+
+    The way it happened, on a real session: a position written before positions
+    recorded which session they belonged to, carried onto the shorter transcript
+    of an agent respawned under the same name.
+    """
+    name = declared(doubles)
+    write(claude_home, SID, [
+        prompt("Fix the thing"),
+        calls("Bash", {"command": "ls"}),
+    ])
+    service = Service(LoopbackTransport(), FakePool())
+    service.store.set_read_position(name, 10_000_000, {}, SID)
+
+    result = await service.ingest_session(name, SID)
+
+    assert result is not None and result.events > 0, "the channel came back to life"
+    assert any("past the end" in note for note in service.degradations)

@@ -881,20 +881,49 @@ async def test_a_tool_duration_reaches_the_row_it_belongs_to(box):
     assert row.as_json()["duration_ms"] == 1234
 
 
-async def test_a_duration_with_no_row_is_counted_rather_than_ignored(box):
-    """The app draws no duration bar for those rows, which is correct. A rising
-    count here is the only way to tell that from "nothing ran"."""
+async def test_a_duration_that_beats_its_row_is_parked_and_applied_after(box):
+    """Measured on a real session, not guessed: `PostToolUse` landed 244 ms
+    after `PreToolUse` for a trivial Bash call, which is less than it takes the
+    nudge in front of it to read the transcript and commit. Dropping those would
+    mean fast tools -- most of them -- never getting a duration bar, and it
+    would look like the feature working badly rather than a race."""
     box.declare("hotline-80", "s1")
     box.live("s1")
     service = service_for(box)
 
     answer = await service.hook({
         "session_id": "s1", "event": "PostToolUse",
-        "tool_use_id": "toolu_missing", "duration_ms": 12,
+        "tool_use_id": "toolu_late", "duration_ms": 147,
     })
+    assert answer["timed"] is False and answer["parked"] is True
+    assert service.tool_durations_unmatched == 0, "not a failure yet"
 
-    assert answer["timed"] is False
-    assert service.tool_durations_unmatched == 1
+    # The row lands, and the next read of this agent's transcript places it.
+    service.store.append_event("hotline-80", "tool", "echo hi", tool="Bash",
+                               tool_use_id="toolu_late")
+    service._flush_durations("hotline-80")
+
+    assert service.store.since("hotline-80", 0)[0].duration_ms == 147
+    assert service._pending_durations.get("hotline-80") in (None, {})
+
+
+async def test_durations_that_never_find_a_row_are_bounded_and_counted(box):
+    """The app draws no duration bar for those rows, which is correct. A rising
+    count is the only way to tell that from "nothing ran", and the dict that
+    holds them must not grow quietly on an agent whose reads have stopped."""
+    from hotline_ios.daemon import PENDING_DURATIONS
+
+    box.declare("hotline-80", "s1")
+    box.live("s1")
+    service = service_for(box)
+
+    for i in range(PENDING_DURATIONS + 5):
+        await service.hook({"session_id": "s1", "event": "PostToolUse",
+                            "tool_use_id": f"toolu_{i}", "duration_ms": i})
+    service._flush_durations("hotline-80")
+
+    assert len(service._pending_durations["hotline-80"]) == PENDING_DURATIONS
+    assert service.tool_durations_unmatched == 5
 
 
 async def test_a_post_tool_nudge_does_not_re_read_the_transcript(box):
@@ -992,3 +1021,19 @@ async def test_a_live_session_that_never_declared_itself_is_still_addressable(bo
 
     assert await service.stop("data-88") == {"agent": "data-88", "interrupted": True}
     assert box.calls == [("interrupt", "hl-shell:@1.%1")]
+
+
+def test_elapsed_prefers_when_the_agent_started_over_when_this_store_noticed(box):
+    """A live session that never declared itself has been running since its
+    descriptor says, not since this database first wrote a row for it -- which
+    for one of his own shells can be hours late and would draw an ELAPSED of a
+    few seconds on something that has been up all day.
+
+    The descriptor writes milliseconds and the rest of this wire is seconds.
+    """
+    session = box.live("s9", name="data-88")
+    session.started_at = 1787701448731
+    service = service_for(box)
+
+    row = next(r for r in service.agents()["agents"] if r["name"] == "data-88")
+    assert row["declaredAt"] == pytest.approx(1787701448.731)

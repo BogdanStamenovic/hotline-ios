@@ -11,6 +11,10 @@ let package = Package(
     targets: [
         .target(
             name: "HotlineCall",
+            // Geist, plus the OFL text the licence requires beside it. A
+            // bundled font file is a resource, not a dependency -- the
+            // no-third-party-packages rule is untouched.
+            resources: [.process("Resources")],
             swiftSettings: [
                 // Main-actor-by-default. Every type in this module is
                 // UI-facing state, so annotating each one would be noise. The

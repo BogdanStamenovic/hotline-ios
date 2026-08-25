@@ -135,6 +135,16 @@ AGENT_MIGRATIONS = {
     # observed rather than inferred from a settings file the session may have
     # been started before.
     "statusline_at": "ALTER TABLE agents ADD COLUMN statusline_at REAL",
+    # Which session's transcript `transcript_offset` is a position in.
+    #
+    # The offset is stored per agent and describes one specific file, and an
+    # agent outlives its sessions: `resume` gives it a new session id and a new
+    # transcript, and re-spawning one by hand does the same. Without this the
+    # daemon reads the new file from the old file's offset -- past the end of a
+    # shorter one, so the channel goes permanently silent, or mid-record in a
+    # longer one. Found on a real session, not reasoned about: an agent
+    # respawned under the same name ingested nothing at all afterwards.
+    "transcript_session": "ALTER TABLE agents ADD COLUMN transcript_session TEXT",
 }
 """Columns added to `agents` after the first schema shipped.
 
@@ -354,16 +364,26 @@ class Store:
 
     # ---- where the transcript reader has got to -------------------------
 
-    def read_position(self, name: str) -> tuple[int, dict[str, int]]:
+    def read_position(self, name: str, session_id: str | None = None) -> tuple[int, dict[str, int]]:
         """`(main transcript offset, per-sidechain-file offsets)`.
 
         Both halves are durable on purpose. Keeping the sidechain offsets in
         memory would make a daemon restart replay every subagent's whole file
         into the map as if it had just happened.
+
+        `session_id` is the file the caller is about to read. If it is not the
+        one the stored position belongs to, the position is `(0, {})` -- a
+        byte offset into a different file is not a smaller kind of correct, it
+        is nonsense, and an agent gets a new transcript every time it is
+        resumed or respawned under the same name.
         """
         row = self.agent(name)
         if row is None:
             return 0, {}
+        if session_id is not None:
+            known = row["transcript_session"]
+            if known is not None and str(known) != str(session_id):
+                return 0, {}
         offset = int(row["transcript_offset"] or 0)
         try:
             raw = json.loads(row["transcript_sidechains"] or "{}")
@@ -374,13 +394,20 @@ class Store:
             sidechains = {}
         return offset, sidechains
 
-    def set_read_position(self, name: str, offset: int, sidechains: dict[str, int]) -> None:
+    def set_read_position(
+        self,
+        name: str,
+        offset: int,
+        sidechains: dict[str, int],
+        session_id: str | None = None,
+    ) -> None:
         with self._lock:
             self.ensure_agent(name)
             self.db.execute(
                 "UPDATE agents SET transcript_offset = ?, transcript_sidechains = ?, "
+                "transcript_session = COALESCE(?, transcript_session), "
                 "updated_at = ? WHERE name = ?",
-                (int(offset), json.dumps(sidechains), time.time(), name),
+                (int(offset), json.dumps(sidechains), session_id, time.time(), name),
             )
             self.db.commit()
 

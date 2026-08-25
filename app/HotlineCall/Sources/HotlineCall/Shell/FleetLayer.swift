@@ -328,7 +328,7 @@ struct FleetLayer: View {
 
     private func leftLimit(_ agent: Agent) -> Double {
         guard !leftControls(agent).isEmpty else { return 0 }
-        return agent.presence == .dead ? 132 : 148
+        return agent.presence == .dead || agent.presence == .done ? 132 : 148
     }
 
     private func rightLimit(_ agent: Agent) -> Double {

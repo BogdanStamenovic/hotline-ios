@@ -4,6 +4,13 @@ import SwiftUI
 struct HotlineApp: App {
     @State private var server = Server()
 
+    init() {
+        // Register the bundled faces before the first `body` asks for a glyph.
+        // Doing it lazily would work -- Swift statics are lazy and atomic --
+        // but it would do file I/O inside a view evaluation on the first frame.
+        _ = Fonts.registered
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()

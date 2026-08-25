@@ -1,17 +1,28 @@
 import SwiftUI
 
-/// One agent's screen. Everything in it is a pure function of `nav`.
+/// One agent's screen. Everything about the transition is a pure function of
+/// `nav`; everything about the content is a fact on its `Channel`.
 ///
-/// The transcript, the feed and the composer's `pending` reconciliation are
-/// step 4 and are deliberately absent: this layer exists at step 3 so the scene
-/// change has a real destination to assemble, with every element on its own
-/// window from APP-PLAN 4.3's staging table.
+/// **The feed is owned by this layer's lifetime and by nothing else.** That is
+/// bug 1 removed rather than patched: `.task(id:)` starts it when this agent
+/// becomes the foreground channel and cancels it when it stops being one, and
+/// no code path from the composer to `Channel.run` exists to be forgotten. Open
+/// a channel and say nothing and messages still arrive.
+///
+/// `.task(id: agent.name)` is also guard 1 of three against bug 2: SwiftUI
+/// cancels the previous task *before* starting the new one, so the old feed
+/// cannot deliver into a live view. Guard 2 is `Channel.apply`'s precondition
+/// on the page's agent; guard 3 is `Shell`'s `.id(open)` on this layer, so no
+/// view state survives a switch either.
 struct ChannelLayer: View {
     let agent: Agent
+    let channel: Channel
     let nav: Double
     let mo: Double
     let onBack: () -> Void
     let onDrag: (ScrubPhase) -> Void
+    let onControls: () -> Void
+    let onContinue: () -> Void
 
     var body: some View {
         GeometryReader { geo in
@@ -20,8 +31,11 @@ struct ChannelLayer: View {
 
                 VStack(alignment: .leading, spacing: 0) {
                     header
-                    thread
-                    ChannelComposer()
+                    ThreadView(channel: channel, nav: nav, mo: mo,
+                               onRetry: { channel.retry($0) },
+                               onContinue: onContinue)
+                        .frame(maxHeight: .infinity)
+                    Composer(answering: agent.isBlocked) { channel.send($0) }
                         .staged(.composer, nav, mo)
                 }
 
@@ -37,6 +51,12 @@ struct ChannelLayer: View {
             }
             .staged(.channel, nav, mo)
         }
+        // The whole seam: paint from cache, drop it if the generation moved,
+        // replace the visible window from history, then stream. One task,
+        // because the steps must happen in order.
+        .task(id: agent.name) {
+            await channel.run(rosterGeneration: agent.generation)
+        }
     }
 
     // MARK: - Header
@@ -49,9 +69,6 @@ struct ChannelLayer: View {
             Text(agent.name)
                 .text(.screenTitle)
                 .foregroundStyle(Theme.ink)
-                // 98 pt is the hero's destination; the travelling copy and
-                // this label must agree to the point or the handover at
-                // e > 0.88 shows as a jump.
                 .staged(.headerTitle, nav, mo)
                 .frame(height: 34, alignment: .leading)
                 .padding(.top, HeroDestination.y)
@@ -63,55 +80,51 @@ struct ChannelLayer: View {
                 .padding(.top, 10)
 
             HStack(spacing: 10) {
-                PhaseChip()
+                PhaseChip(count: channel.phases.count)
                     .staged(.phaseChip, nav, mo)
                 Spacer(minLength: 0)
             }
             .padding(.top, 18)
 
-            Text(stateLine)
-                .text(.rowSubtitle)
-                .foregroundStyle(agent.isBlocked ? Theme.sigLift : Theme.ink2)
-                .staged(.stateLine, nav, mo)
-                .padding(.top, 10)
+            // **The state line is the control sheet's affordance: tap it.** It
+            // is already the place he looks to find out what the agent is
+            // doing, so it is the place the controls belong.
+            Button(action: onControls) {
+                HStack(spacing: 8) {
+                    Text(stateLine(agent))
+                        .text(.rowSubtitle)
+                        .foregroundStyle(agent.isBlocked ? Theme.sigLift : Theme.ink2)
+                    ToolDot(flashes: channel.toolFlash)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.ink3)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .staged(.stateLine, nav, mo)
+            .padding(.top, 10)
+            .accessibilityLabel("\(stateLine(agent)). Controls.")
 
-            InstrumentStrip(agent: agent, nav: nav, mo: mo)
+            InstrumentStrip(agent: agent, channel: channel, nav: nav, mo: mo)
                 .padding(.top, 16)
+
+            if case .failed(let why) = channel.loading {
+                // The cached window is still on screen and is still the truest
+                // thing there is. Say what went wrong; do not blank it.
+                Text(why)
+                    .text(.label(9.5))
+                    .foregroundStyle(Theme.sig)
+                    .lineLimit(2)
+                    .padding(.top, 10)
+            }
 
             Rectangle().fill(Theme.line).frame(height: 1).padding(.top, 18)
         }
         .padding(.leading, HeroDestination.x)
         .padding(.trailing, Theme.edge)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Real, from the roster. The one thing on this screen that is a fact about
-    /// the agent rather than a fact about the transition.
-    private var stateLine: String {
-        switch agent.presence {
-        case .blocked: "Waiting on you"
-        case .busy: agent.isStalled ? "Running — nothing observed for a while" : "Running"
-        case .live: "Idle"
-        case .dead: agent.deadReason ?? "Not running"
-        }
-    }
-
-    // MARK: - Thread
-
-    /// Empty, because nothing has fetched a transcript: `Channel`, the cache
-    /// and the hard-refresh-then-stream seam are step 4. The staging window for
-    /// message `k` is implemented in `Role.message` and applied here the moment
-    /// there are moments to apply it to.
-    private var thread: some View {
-        VStack {
-            Spacer()
-            Text("No transcript loaded.")
-                .text(.rowSubtitle)
-                .foregroundStyle(Theme.ink3)
-                .staged(.message(k: 0), nav, mo)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity)
     }
 }
 
@@ -178,122 +191,19 @@ private struct BackStrip: View {
 
 // MARK: - Header pieces
 
+/// The map's affordance. It says how many phases there are only when the
+/// server has sent phase records; an empty route says so rather than showing a
+/// count of zero as if that were a measurement.
 private struct PhaseChip: View {
+    let count: Int
+
     var body: some View {
-        Text("ROUTE")
+        Text(count > 0 ? "ROUTE · \(count)" : "ROUTE")
             .text(.label(9.5))
+            .monospacedDigit()
             .foregroundStyle(Theme.ink3)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .overlay(Capsule().stroke(Theme.line2, lineWidth: 1))
-    }
-}
-
-/// APP-PLAN 5.3's four cells, rendering **only the ones with a source**.
-///
-/// `Vitals` is absent until server step 8 and `declaredAt` until APP-PLAN 11's
-/// first ask lands, so today this is usually empty and that is correct. A cell
-/// with no honest source does not ship, and a strip of dashes is a readout
-/// claiming to be a measurement.
-private struct InstrumentStrip: View {
-    let agent: Agent
-    let nav: Double
-    let mo: Double
-
-    var body: some View {
-        if !cells.isEmpty {
-            HStack(alignment: .top, spacing: 26) {
-                ForEach(Array(cells.enumerated()), id: \.element.label) { index, cell in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(cell.label)
-                            .text(.label(9.5))
-                            .foregroundStyle(Theme.ink3)
-                        Text(cell.value)
-                            .text(.cellValue)
-                            .monospacedDigit()
-                            .foregroundStyle(cell.hot ? Theme.sig : Theme.ink)
-                            .contentTransition(.numericText())
-                    }
-                    .staged(.stripCell(index), nav, mo)
-                }
-                Spacer(minLength: 0)
-            }
-            .accessibilityElement(children: .combine)
-        }
-    }
-
-    private struct Cell {
-        let label: String
-        let value: String
-        var hot = false
-    }
-
-    private var cells: [Cell] {
-        var out: [Cell] = []
-        if let vitals = agent.vitals {
-            // Characters, not a tokenizer count, and never a billing figure.
-            out.append(Cell(label: "OUTPUT", value: "\(Int(vitals.tokensPerSec.rounded())) ch/s"))
-            if let used = vitals.contextUsed {
-                out.append(Cell(label: "CONTEXT", value: "\(Int((used * 100).rounded())) %",
-                                hot: used > 0.85))
-            } else if agent.contextAvailable ?? true {
-                // The session has not taken its first turn. An empty track that
-                // will fill in thirty seconds and one that never will look
-                // identical and mean opposite things, which is why the third
-                // state renders nothing at all rather than a dash.
-                out.append(Cell(label: "CONTEXT", value: "—"))
-            }
-            out.append(Cell(label: "TOOLS",
-                            value: String(format: "%.1f /min", vitals.toolsPerMin)))
-        }
-        if agent.isBlocked, let since = agent.blockedAt {
-            out.append(Cell(label: "BLOCKED", value: clock(-since.timeIntervalSinceNow), hot: true))
-        } else if let declared = agent.declaredDate {
-            out.append(Cell(label: "ELAPSED", value: clock(-declared.timeIntervalSinceNow)))
-        }
-        return out
-    }
-
-    private func clock(_ seconds: Double) -> String {
-        let total = Int(max(0, seconds))
-        return total >= 3600
-            ? String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
-            : String(format: "%d:%02d", total / 60, total % 60)
-    }
-}
-
-/// Present, and honestly refused. Sending needs `Channel.pending` -- the
-/// optimistic echo that is never put in `moments` -- and that is step 4. This
-/// renders the surface with the app's own vocabulary for a control it cannot
-/// yet dispatch, rather than offering a field that silently drops what he
-/// types.
-private struct ChannelComposer: View {
-    var body: some View {
-        HStack(spacing: 12) {
-            Text("this build can't do that yet.")
-                .text(.rowSubtitle)
-                .foregroundStyle(Theme.ink3)
-            Spacer(minLength: 0)
-            Circle()
-                .fill(Theme.ink5)
-                .frame(width: 38, height: 38)
-                .overlay(
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Theme.ink4)
-                )
-        }
-        .padding(.horizontal, Theme.edge)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.cardRadius)
-                .fill(Theme.surf)
-                .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius)
-                    .stroke(Theme.line, lineWidth: 1))
-        )
-        .padding(.horizontal, Theme.edge)
-        .padding(.bottom, 12)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Composer. Sending is not in this build yet.")
     }
 }

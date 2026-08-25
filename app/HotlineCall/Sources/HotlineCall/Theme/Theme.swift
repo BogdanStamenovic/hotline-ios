@@ -55,16 +55,19 @@ nonisolated enum Theme {
 
     // MARK: - Type
     //
-    // The design rests on Geist's tracking and its tabular figures. The font is
-    // not bundled yet, so this is APP-PLAN 4.1's named fallback: SF with the
-    // tracking table applied unchanged. Setting `family` to a registered face
-    // is the whole change if the file lands later -- every call site already
-    // goes through `font(_:)`.
-    static let family: String? = nil
+    // The design rests on Geist's tracking and its tabular figures, and Geist is
+    // bundled (APP-PLAN 12.4, `Fonts.swift`).
+
+    /// **The one-line fallback.** Set this to `nil` and every call site below
+    /// goes back to SF with the tracking table applied unchanged -- APP-PLAN
+    /// 4.1's named fallback, and the density holds. It is kept because the
+    /// resource-plus-registration path cannot be verified without the device:
+    /// if the face does not come through, this is the whole edit.
+    static let family: String? = "Geist"
 
     static func font(_ style: TextStyle) -> Font {
-        if let family {
-            .custom(family, fixedSize: style.size).weight(style.weight)
+        if let face = Fonts.face(for: style.weight) {
+            .custom(face, fixedSize: style.size)
         } else {
             .system(size: style.size, weight: style.weight)
         }

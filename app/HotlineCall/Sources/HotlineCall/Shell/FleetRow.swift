@@ -141,6 +141,9 @@ struct FleetRow: View {
             parts.append("needs you")
         case .busy: parts.append("working")
         case .live: parts.append("idle")
+        // Spoken apart for the same reason they are drawn apart: one of these
+        // finished, the other stopped existing.
+        case .done: parts.append("finished")
         case .dead: parts.append(agent.deadReason ?? "not running")
         }
         parts.append(subtitle)
@@ -224,9 +227,24 @@ private struct ControlPad: View {
 /// which rate you see tells you which state the agent is in, and that mapping
 /// is real data. It does not claim to be a rate of anything.
 ///
-/// A dead agent is still -- no pulse, no ring, no breathe. SERVER-PLAN 9.2
+/// A finished agent is still -- no pulse, no ring, no breathe. SERVER-PLAN 9.2
 /// states that as a correctness requirement on the data rather than a styling
 /// note, so it is enforced in the mark itself.
+///
+/// **Five states, not four** (APP-PLAN 12.5), and `done` and `dead` are told
+/// apart without a fifth hue -- which would fight the single-accent discipline
+/// the whole design rests on:
+///
+/// | state | fill | motion |
+/// |---|---|---|
+/// | live | solid ink | 3.6 s breathe |
+/// | busy | ink 42 % | 1.15 s breathe, expanding ring |
+/// | blocked | `sig` | 1.7 s breathe, expanding ring |
+/// | **done** | **solid, dimmed** | **still** |
+/// | **dead** | **hollow ring** | **still** |
+///
+/// Filled-but-quiet is an agent that finished and said so; an empty ring is a
+/// process that is gone. Same restraint, one more true thing per glance.
 struct StatusDot: View {
     let presence: Agent.Presence
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -242,6 +260,8 @@ struct StatusDot: View {
                     .scaleEffect(ringing ? 2.4 : 1)
                     .opacity(ringing ? 0 : 0.7)
             }
+            // The one hollow mark in the app. Nothing inside it, because
+            // there is nothing running.
             if presence == .dead {
                 Circle()
                     .stroke(Theme.ink3, lineWidth: 1.4)
@@ -262,9 +282,9 @@ struct StatusDot: View {
     }
 
     private func start() {
-        // Looping decoration stops entirely under Reduce Motion, and a dead
-        // agent never starts one at all.
-        guard !reduceMotion, presence != .dead else {
+        // Looping decoration stops entirely under Reduce Motion, and an agent
+        // that has stopped never starts one at all.
+        guard !reduceMotion, period > 0 else {
             breathing = false
             ringing = false
             return
@@ -280,6 +300,8 @@ struct StatusDot: View {
         case .blocked: Theme.sig
         case .busy: Theme.ink.opacity(0.42)
         case .live: Theme.ink
+        // Filled, but quiet: it finished and said so.
+        case .done: Theme.ink3
         case .dead: Theme.ink3
         }
     }
@@ -289,7 +311,7 @@ struct StatusDot: View {
         case .blocked: 0.35
         case .busy: 0.30
         case .live: 0.45
-        case .dead: 1
+        case .done, .dead: 1
         }
     }
 
@@ -298,7 +320,7 @@ struct StatusDot: View {
         case .live: 3.6
         case .busy: 1.15
         case .blocked: 1.7
-        case .dead: 0
+        case .done, .dead: 0
         }
     }
 
