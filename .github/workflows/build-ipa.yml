@@ -1,0 +1,68 @@
+# FALLBACK, not currently in use. Prepared rather than written under pressure.
+#
+# The primary path builds only the Darwin SDK on a macOS runner and copies it
+# back, so the app is built on archserver where it can be iterated on. This one
+# builds the .ipa entirely on the runner instead, and exists for one case: the
+# SDK bundle turning out to be impractical to transfer or to use locally.
+#
+# NOT PUSHED ANYWHERE YET, and that is deliberate. Bogdan authorised "a
+# throwaway public repo" for the SDK build, and both reviewers held that repo to
+# exactly two files. Pushing the app source there is a wider thing than he
+# agreed to, even though `app/` now contains no addressing at all -- verified by
+# grep, since the server address became a UserDefaults setting.
+#
+# So this needs one of:
+#   * his say-so to put the app in the existing public repo, or
+#   * a PRIVATE repo, which costs macOS minutes (10x multiplier, ~200 real
+#     minutes/month on the free plan) rather than being unmetered.
+#
+# Either is his call and neither should be taken on inference.
+name: build-ipa
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          set -x
+          xcodebuild -version
+          swift --version
+
+      - name: Install xtool
+        run: |
+          set -euxo pipefail
+          curl -fsSL -o xtool.zip \
+            https://github.com/xtool-org/xtool/releases/download/1.17.0/xtool.app.zip
+          unzip -q xtool.zip -d xtool-app
+          echo "XTOOL=$(find xtool-app -name xtool -type f -perm +111 | head -1)" >> "$GITHUB_ENV"
+
+      # On a macOS runner Xcode is already present, so the SDK step is local and
+      # cheap compared with extracting a .xip.
+      - name: Darwin SDK
+        run: |
+          set -euxo pipefail
+          "$XTOOL" sdk build /Applications/Xcode.app || \
+          "$XTOOL" sdk install /Applications/Xcode.app
+          "$XTOOL" sdk status
+
+      - name: Build the app
+        working-directory: app/HotlineCall
+        run: |
+          set -euxo pipefail
+          # Unsigned: signing needs his Apple ID, and putting that in CI secrets
+          # is a bigger decision than building. The unsigned artifact is still
+          # the thing that proves the code compiles against the real SDK.
+          "$XTOOL" dev build || swift build --swift-sdk arm64-apple-ios
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hotlinecall-unsigned
+          path: app/HotlineCall/.build
+          retention-days: 5
