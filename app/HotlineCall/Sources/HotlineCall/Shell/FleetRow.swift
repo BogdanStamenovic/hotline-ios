@@ -10,14 +10,27 @@ import SwiftUI
 struct FleetRow: View {
     let agent: Agent
     let height: Double
+    let swipeX: Double
+    let onControl: (Capability) -> Void
 
     var body: some View {
-        face
-            .frame(height: height, alignment: .topLeading)
-            .clipped()
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(spokenLabel)
-            .accessibilityAddTraits(.isButton)
+        ZStack(alignment: .topLeading) {
+            controls
+            face
+                .offset(x: swipeX)
+        }
+        .frame(height: height, alignment: .topLeading)
+        .clipped()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(spokenLabel)
+        .accessibilityAddTraits(.isButton)
+        // Every capability is reachable without the swipe. The swipe is the
+        // fast path, never the only one.
+        .accessibilityActions {
+            ForEach(agent.capabilities) { capability in
+                Button(capability.label) { onControl(capability) }
+            }
+        }
     }
 
     // MARK: - The row itself
@@ -116,6 +129,75 @@ struct FleetRow: View {
         return parts.joined(separator: ", ")
     }
 
+    // MARK: - The revealed controls
+    //
+    // Rendered from the server's array, in the server's order, with the
+    // server's labels. A capability this build cannot dispatch is shown
+    // disabled rather than hidden: hiding it makes a server that has moved
+    // ahead of the app invisible, and needing a new build is the one thing
+    // that is expensive to discover any other way.
+
+    private var controls: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 0) {
+                ForEach(rightControl.map { [$0] } ?? []) { capability in
+                    ControlPad(capability: capability, tint: Theme.line2) {
+                        onControl(capability)
+                    }
+                    .frame(width: 118)
+                }
+            }
+            Spacer(minLength: 0)
+            HStack(spacing: 0) {
+                ForEach(leftControls) { capability in
+                    ControlPad(capability: capability,
+                               tint: capability.id == "kill" ? Theme.sig20 : Theme.line2) {
+                        onControl(capability)
+                    }
+                    .frame(width: leftControls.count > 1 ? 74 : 148)
+                }
+            }
+        }
+        .frame(height: height)
+        .background(Theme.surf)
+    }
+
+    private var leftControls: [Capability] {
+        agent.capabilities.filter { $0.id == "stop" || $0.id == "kill" }.prefix(2).map { $0 }
+    }
+
+    private var rightControl: Capability? {
+        agent.capabilities.first { $0.id == "retask" }
+            ?? agent.capabilities.first { $0.id == "resume" }
+    }
+}
+
+/// One revealed control. Disabled renders visible and dimmed and still answers
+/// a tap -- with its reason. A disabled control that does nothing when tapped
+/// is indistinguishable from a broken one.
+private struct ControlPad: View {
+    let capability: Capability
+    let tint: Color
+    let act: () -> Void
+
+    var body: some View {
+        Button(action: act) {
+            VStack(spacing: 5) {
+                Text(capability.label.uppercased())
+                    .text(.label(10))
+                    .multilineTextAlignment(.center)
+                if !capability.usable {
+                    Image(systemName: "slash.circle")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+            }
+            .foregroundStyle(capability.usable ? Theme.ink : Theme.ink3)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(tint.opacity(capability.usable ? 1 : 0.4))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 // MARK: - The status dot

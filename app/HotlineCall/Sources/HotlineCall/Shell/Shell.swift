@@ -26,7 +26,9 @@ struct Shell: View {
             Theme.bg.ignoresSafeArea()
 
             FleetLayer(fleet: fleet, reachable: fleet.reachable,
-                       refreshing: refreshing, onSettings: { settings = true })
+                       refreshing: refreshing,
+                       onRefresh: refresh, onBrief: brief, onControl: control,
+                       onSettings: { settings = true })
                 .zIndex(Z.fleet)
 
             OverlayLayer(reachable: fleet.reachable, toast: toast)
@@ -53,6 +55,28 @@ struct Shell: View {
         await fleet.hardRefresh()
         refreshing = false
         fleet.begin()
+    }
+
+    private func refresh() {
+        guard !refreshing else { return }
+        Task {
+            refreshing = true
+            await fleet.hardRefresh()
+            refreshing = false
+        }
+    }
+
+    /// Step 2 renders the control surface; step 6 sends it. A refusal is pure
+    /// rendering and ships now -- a disabled control that says nothing when
+    /// tapped is indistinguishable from a broken one.
+    private func control(_ agent: Agent, _ capability: Capability) {
+        guard let refusal = capability.refusal else { return }
+        toast = Toast(text: "\(capability.label): \(refusal)")
+    }
+
+    private func brief() {
+        guard let capability = fleet.globalControls.first(where: { $0.id == "new" }) else { return }
+        if let refusal = capability.refusal { toast = Toast(text: refusal) }
     }
 
     private func expireToast() {
