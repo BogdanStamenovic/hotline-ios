@@ -788,3 +788,77 @@ the subcommand been right, it would have built an SDK from the wrong Xcode.
   have to trust my reading of it
 
 If it fails again, it will now say *how*.
+
+### Attempts 2, 3 and 4 — the cause is probably an interactive prompt
+
+**Attempt 2 hung in the `Install xtool` step**, on an xtool invocation that
+should take milliseconds. That is the informative part. The only change to that
+step was two extra xtool calls — so the hang moved when I moved the calls, which
+points at xtool itself rather than at the SDK work.
+
+And there is a local reproduction. Running `xtool new` on this box earlier:
+
+```
+Select login mode
+0: API Key (requires paid Apple Developer Program membership)
+1: Password (works with any Apple ID but uses private APIs)
+Choice (0-1): Error: I/O on closed channel
+```
+
+It only *errored* here because the channel was already closed. **On a runner
+with a pty it would sit and wait.** That is a much better explanation of
+attempt 1's ninety silent minutes than "extracting something enormous" — an
+extraction would have produced *some* output, and it produced exactly none.
+
+So attempt 3 closed stdin on every xtool call, and dropped `script(1)` — giving
+it a pty was actively counterproductive, since a pty is what lets a prompt wait
+rather than fail.
+
+**Attempt 3 then failed in ten seconds on `timeout: command not found`.** That
+is GNU coreutils; macOS does not ship it. Entirely my bug and unrelated to the
+hypothesis — but a ten-second failure naming its own cause, instead of ninety
+minutes teaching nothing, is exactly the argument for having built the
+instrumentation. It caught my mistake as readily as xtool's.
+
+Attempt 4 running without `timeout`.
+
+**None of this is good news yet, and it should not be reported as any.** The
+stdin theory is well-supported and still a theory. Nothing has produced an SDK.
+The app has never been compiled against one. What has actually improved is that
+failures now cost seconds and name themselves.
+
+### The Xcode symlink, worth keeping regardless
+
+`/Applications/Xcode.app` on the runner points at whatever the image defaults
+to — **16.4**, while the same image carries up to **26.3** and xtool's docs ask
+for Xcode 26. That will change silently between runner image releases. The
+workflow now pins `Xcode_26.3.app` explicitly and exposes it as a
+`workflow_dispatch` input, so the next surprise is a one-word change rather than
+a rediscovery.
+
+### His SIP address arrived, and the calling account stopped at a captcha
+
+Verified from Discord myself (msg `1541877810174369853`):
+
+> Okay so i setup linphone the sip is sip:b0g13a@sip.linphone.org
+
+In `.env` (mode 600, gitignored, confirmed with `git check-ignore`).
+
+`data-89` took account creation as far as it goes and **stopped at a live
+hCaptcha** — real sitekey, real widget, not the click-through it resembles. That
+is the right stop: CLAUDE.md scopes the improvisation mandate to engineering
+dead ends, explicitly not to policy ones, and defeating an anti-abuse control is
+the second. The cost of stopping is two minutes of a man already at a keyboard.
+
+**A test I ran that proved nothing, and the control is why I know that.** I sent
+an `OPTIONS` to his address and to a deliberately fake one:
+
+```
+sip:b0g13a@sip.linphone.org                    -> SIP/2.0 407
+sip:definitely-not-a-real-user-xyz@...         -> SIP/2.0 407
+```
+
+Identical. linphone.org discloses nothing before authentication. Without the
+control row I might have read "407 for his address" as meaning something — the
+same mistake shape as the Apple capabilities table earlier, where an empty cell
+only became decidable against a row known to be populated.
