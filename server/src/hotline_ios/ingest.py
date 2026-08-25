@@ -150,6 +150,13 @@ class Ingested:
     compactions: int = 0
     last_tool_at: float | None = None
     last_compaction: dict[str, Any] = field(default_factory=dict)
+    # `(at, characters)` for each piece of assistant prose in this slice, at the
+    # transcript's own timestamps. The only source there is for an output rate:
+    # §2 keeps the authoritative text on disk and stores only a phase outcome,
+    # so the characters have to be counted as they go past rather than queried
+    # back later. Subagent prose is excluded, the same as everywhere else here
+    # -- it is not the parent's answer.
+    text_samples: list[tuple[float, int]] = field(default_factory=list)
 
 
 def absorb(
@@ -219,11 +226,15 @@ def absorb(
         elif event.kind == "assistant":
             if event.text.strip():
                 pending_outcome = event.text
+                result.text_samples.append((at, len(event.text)))
         elif event.kind == "tool":
             store.append_event(
                 agent, "tool", summarise(str(event.tool or ""), event.detail),
                 tool=str(event.tool or ""), phase_id=phase_id or covering(at),
                 via_subagent=event.is_sidechain, at=at,
+                # Kept so the `PostToolUse` nudge, which arrives after this row
+                # exists, can find it and fill in how long the call took.
+                tool_use_id=event.tool_use_id,
             )
             result.events += 1
             result.tools += 1

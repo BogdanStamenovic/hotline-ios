@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_agent_seq ON events(agent_name, seq);
 CREATE INDEX IF NOT EXISTS events_conversation_seq ON events(conversation_id, seq);
 CREATE INDEX IF NOT EXISTS events_kind_seq ON events(kind, seq);
+CREATE INDEX IF NOT EXISTS events_at ON events(kind, at);
 
 CREATE TABLE IF NOT EXISTS phases (
   id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, conversation_id TEXT,
@@ -114,7 +115,7 @@ CREATE INDEX IF NOT EXISTS phases_agent ON phases(agent_name, started_at);
 CREATE INDEX IF NOT EXISTS phases_open ON phases(agent_name, ended_at);
 """
 
-MIGRATIONS = {
+AGENT_MIGRATIONS = {
     # Per-subagent byte offsets, as JSON. Not a second INTEGER because there is
     # one sidechain file per subagent and they are appended to concurrently with
     # the main transcript; see `transcript.sidechain_paths`.
@@ -125,12 +126,40 @@ MIGRATIONS = {
     # session that has used none of it.
     "context_used": "ALTER TABLE agents ADD COLUMN context_used REAL",
     "context_used_at": "ALTER TABLE agents ADD COLUMN context_used_at REAL",
+    # When this daemon last received a statusLine report for this agent, of any
+    # kind -- including the ones carrying `null`. It is the whole of
+    # `contextAvailable`: a session that has reported once has the wrapper
+    # installed, so a missing `context_used` means "no first turn yet", and a
+    # session that has never reported has no wrapper, so it means "never". Those
+    # render identically and mean opposite things (§5.6), which is why it is
+    # observed rather than inferred from a settings file the session may have
+    # been started before.
+    "statusline_at": "ALTER TABLE agents ADD COLUMN statusline_at REAL",
 }
-"""Columns added after the first schema shipped.
+"""Columns added to `agents` after the first schema shipped.
 
 `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, and
 the database serving his phone already existed, so new columns need a real
 `ALTER TABLE` guarded by what is already there."""
+
+EVENT_MIGRATIONS = {
+    # How long the tool call this row describes actually took. It is in the
+    # `PostToolUse` hook payload and was thrown away; the app's tool-row duration
+    # bar renders nothing at all rather than a guessed width without it, which
+    # is correct and is also why it was worth wiring up.
+    "duration_ms": "ALTER TABLE events ADD COLUMN duration_ms REAL",
+    # The phone's own id for something it sent. Echoed back on the response and
+    # carried on the resulting row, so reconciling a local echo against the feed
+    # is an equality test rather than a FIFO assumption -- and so a retry after a
+    # timeout is detectable as a duplicate instead of being delivered twice.
+    "client_token": "ALTER TABLE events ADD COLUMN client_token TEXT",
+    # The CLI's own id for the tool call this row describes. Kept so the
+    # `PostToolUse` nudge -- which arrives after the row has been written from
+    # the transcript -- can find the row it belongs to and fill in its duration.
+    "tool_use_id": "ALTER TABLE events ADD COLUMN tool_use_id TEXT",
+}
+
+MIGRATIONS = {"agents": AGENT_MIGRATIONS, "events": EVENT_MIGRATIONS}
 
 
 @dataclass(frozen=True)
@@ -144,6 +173,9 @@ class StoredEvent:
     text: str
     via_subagent: bool
     at: float
+    duration_ms: float | None = None
+    client_token: str | None = None
+    tool_use_id: str | None = None
 
     def as_json(self) -> dict[str, Any]:
         """The wire shape `/api/v1/events` has always returned.
@@ -155,6 +187,13 @@ class StoredEvent:
         out: dict[str, Any] = {"seq": self.seq, "kind": self.kind, "text": self.text, "at": self.at}
         if self.tool:
             out["tool"] = self.tool
+        # Both omitted rather than sent as null when there is nothing to say.
+        # The app's duration bar renders only when a real number arrives, and a
+        # present-but-null field is a second way to say absent.
+        if self.duration_ms is not None:
+            out["duration_ms"] = self.duration_ms
+        if self.client_token:
+            out["client_token"] = self.client_token
         return out
 
     def as_agent_json(self) -> dict[str, Any]:
@@ -234,10 +273,11 @@ class Store:
 
     def _migrate(self) -> None:
         """Add columns the first schema did not have. Caller holds the lock."""
-        have = {row["name"] for row in self.db.execute("PRAGMA table_info(agents)")}
-        for column, statement in MIGRATIONS.items():
-            if column not in have:
-                self.db.execute(statement)
+        for table, columns in MIGRATIONS.items():
+            have = {row["name"] for row in self.db.execute(f"PRAGMA table_info({table})")}
+            for column, statement in columns.items():
+                if column not in have:
+                    self.db.execute(statement)
 
     def close(self) -> None:
         with self._lock:
@@ -546,15 +586,20 @@ class Store:
         phase_id: str | None = None,
         via_subagent: bool = False,
         at: float | None = None,
+        duration_ms: float | None = None,
+        client_token: str | None = None,
+        tool_use_id: str | None = None,
     ) -> StoredEvent:
         at = time.time() if at is None else at
         with self._lock:
             self.ensure_agent(agent_name)
             cur = self.db.execute(
                 "INSERT INTO events "
-                "(conversation_id, agent_name, kind, phase_id, tool, text, via_subagent, at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (conversation_id, agent_name, kind, phase_id, tool, text, int(via_subagent), at),
+                "(conversation_id, agent_name, kind, phase_id, tool, text, via_subagent, at, "
+                " duration_ms, client_token, tool_use_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (conversation_id, agent_name, kind, phase_id, tool, text, int(via_subagent), at,
+                 duration_ms, client_token, tool_use_id),
             )
             self.db.commit()
             seq = int(cur.lastrowid or 0)
@@ -568,7 +613,60 @@ class Store:
             text=text,
             via_subagent=via_subagent,
             at=at,
+            duration_ms=duration_ms,
+            client_token=client_token,
+            tool_use_id=tool_use_id,
         )
+
+    def set_duration(self, tool_use_id: str, duration_ms: float) -> bool:
+        """Fill in how long one tool call took. Returns whether a row was found.
+
+        The number comes from the `PostToolUse` hook payload, which is the only
+        place it exists -- the transcript's `durationMs` is a whole turn's, not
+        a tool's, and there is nothing per-call in the file at all. Reported
+        rather than assumed: a miss means the row was never written (the nudge
+        for it was dropped, or the read is behind), and the app renders no
+        duration bar instead of a guessed one.
+        """
+        if not tool_use_id:
+            return False
+        with self._lock:
+            cur = self.db.execute(
+                "UPDATE events SET duration_ms = ? WHERE tool_use_id = ? AND duration_ms IS NULL",
+                (float(duration_ms), tool_use_id),
+            )
+            self.db.commit()
+        return bool(cur.rowcount)
+
+    def set_statusline_seen(self, name: str, at: float | None = None) -> None:
+        """Note that the statusline wrapper reported for this agent at all.
+
+        Called for every statusLine nudge including the ones carrying no usage
+        figure, because the question this answers is "is the wrapper installed",
+        not "how full is the context".
+        """
+        with self._lock:
+            self.ensure_agent(name)
+            self.db.execute(
+                "UPDATE agents SET statusline_at = ?, updated_at = ? WHERE name = ?",
+                (time.time() if at is None else at, time.time(), name),
+            )
+            self.db.commit()
+
+    def tools_since(self, since: float) -> dict[str, int]:
+        """agent -> tool calls after `since`. One query for the whole roster.
+
+        Per-agent counting would be one query per row on an endpoint that is
+        also the body of a long-poll; this is a single grouped scan over an
+        index on `(kind, at)`.
+        """
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT agent_name, COUNT(*) AS n FROM events "
+                "WHERE kind = 'tool' AND at > ? GROUP BY agent_name",
+                (float(since),),
+            ).fetchall()
+        return {row["agent_name"]: int(row["n"]) for row in rows}
 
     def _rows(self, sql: str, params: Any) -> list[StoredEvent]:
         with self._lock:
@@ -584,6 +682,11 @@ class Store:
                 text=row["text"],
                 via_subagent=bool(row["via_subagent"]),
                 at=float(row["at"]),
+                duration_ms=(
+                    float(row["duration_ms"]) if row["duration_ms"] is not None else None
+                ),
+                client_token=row["client_token"],
+                tool_use_id=row["tool_use_id"],
             )
             for row in rows
         ]

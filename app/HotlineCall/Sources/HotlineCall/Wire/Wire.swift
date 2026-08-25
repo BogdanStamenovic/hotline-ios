@@ -61,9 +61,15 @@ nonisolated struct Agent: Identifiable, Hashable, Sendable, Codable {
         }
     }
 
-    /// The four appearances APP-PLAN 5.1's dot encodes.
+    /// The five appearances APP-PLAN 5.1's dot encodes.
+    ///
+    /// `done` and `dead` are separate on purpose (APP-PLAN 12.5). The daemon
+    /// distinguishes an agent that finished and said so from one whose process
+    /// is gone and never said anything; its own comments call that distinction
+    /// the point, and collapsing them throws away a true fact at exactly the
+    /// glance where it matters.
     nonisolated enum Presence: Sendable, Hashable {
-        case live, busy, blocked, dead
+        case live, busy, blocked, done, dead
     }
 
     var isBlocked: Bool { blocked ?? false }
@@ -72,17 +78,30 @@ nonisolated struct Agent: Identifiable, Hashable, Sendable, Codable {
     var generation: Int { historyGeneration ?? 0 }
     var capabilities: [Capability] { controls ?? [] }
 
-    /// Blocked outranks everything: it is the one thing he has to act on.
-    ///
-    /// The `nil` arm is the daemon that has not shipped `state` yet -- it sends
-    /// only `live` and `busy`, and deriving presence from those two is exactly
-    /// what the old app did. It is a narrower answer, not a wrong one.
     var presence: Presence {
-        if isBlocked { return .blocked }
+        Self.presence(state: state, blocked: isBlocked, live: live, busy: busy)
+    }
+
+    /// **The one place the daemon's vocabulary becomes an appearance.**
+    ///
+    /// The server says `idle | working | done | dead` with `blocked` as a
+    /// separate boolean; the dot says `live | busy | blocked | done | dead`.
+    /// Keeping the translation in a single named function is deliberate: the
+    /// server's vocabulary has already moved once, and when it moves again this
+    /// is one edit rather than a search.
+    ///
+    /// Blocked outranks everything, because it is the one thing he has to act
+    /// on. The `nil` arm is the daemon that has not shipped `state` yet -- it
+    /// sends only `live` and `busy`, and it cannot tell a clean finish from a
+    /// crash, so it answers `.dead` for both. That is a narrower answer, not a
+    /// wrong one: `done` requires a server that reports `done`.
+    static func presence(state: State?, blocked: Bool, live: Bool, busy: Bool) -> Presence {
+        if blocked { return .blocked }
         switch state {
         case .working: return .busy
         case .idle: return .live
-        case .done, .dead: return .dead
+        case .done: return .done
+        case .dead: return .dead
         case .unrecognised, nil: return busy ? .busy : (live ? .live : .dead)
         }
     }
@@ -173,12 +192,25 @@ nonisolated struct Moment: Identifiable, Hashable, Sendable, Codable {
     /// SERVER-PLAN 2: rows a subagent produced are dimmed and indented.
     let viaSubagent: Bool
     let phase: String?
+    /// How long the tool call took. APP-PLAN 11's third ask; the store keeps it
+    /// as a REAL and omits the key entirely when it has nothing to say. **A
+    /// tool row without it renders with no bar, never a guessed one.**
+    let durationMs: Double?
+    /// APP-PLAN 11's fourth ask, echoed on the event a write produced. When it
+    /// is here, reconciliation is exact; when it is absent, `Channel` falls
+    /// back to FIFO, which is sound because this phone is the only writer.
+    let clientToken: String?
 
     var id: Int { seq }
     var isFromHim: Bool { kind == .you }
 
+    /// Seconds, and only when the server measured them.
+    var duration: TimeInterval? { durationMs.map { $0 / 1000 } }
+
     private enum CodingKeys: String, CodingKey {
         case seq, kind, text, tool, at, conversation, viaSubagent, phase
+        case durationMs = "duration_ms"
+        case clientToken = "client_token"
     }
 
     init(from decoder: any Decoder) throws {
@@ -191,6 +223,8 @@ nonisolated struct Moment: Identifiable, Hashable, Sendable, Codable {
         conversation = try c.decodeIfPresent(String.self, forKey: .conversation)
         viaSubagent = try c.decodeIfPresent(Bool.self, forKey: .viaSubagent) ?? false
         phase = try c.decodeIfPresent(String.self, forKey: .phase)
+        durationMs = try c.decodeIfPresent(Double.self, forKey: .durationMs)
+        clientToken = try c.decodeIfPresent(String.self, forKey: .clientToken)
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -203,10 +237,13 @@ nonisolated struct Moment: Identifiable, Hashable, Sendable, Codable {
         try c.encodeIfPresent(conversation, forKey: .conversation)
         if viaSubagent { try c.encode(true, forKey: .viaSubagent) }
         try c.encodeIfPresent(phase, forKey: .phase)
+        try c.encodeIfPresent(durationMs, forKey: .durationMs)
+        try c.encodeIfPresent(clientToken, forKey: .clientToken)
     }
 
     init(seq: Int, kind: Kind, text: String, tool: String? = nil, at: Date,
-         conversation: String? = nil, viaSubagent: Bool = false, phase: String? = nil) {
+         conversation: String? = nil, viaSubagent: Bool = false, phase: String? = nil,
+         durationMs: Double? = nil, clientToken: String? = nil) {
         self.seq = seq
         self.kind = kind
         self.text = text
@@ -215,6 +252,8 @@ nonisolated struct Moment: Identifiable, Hashable, Sendable, Codable {
         self.conversation = conversation
         self.viaSubagent = viaSubagent
         self.phase = phase
+        self.durationMs = durationMs
+        self.clientToken = clientToken
     }
 }
 
@@ -265,6 +304,31 @@ nonisolated struct HistoryPage: Codable, Sendable {
         case newestSeq = "newest_seq"
         case hasMore = "has_more"
     }
+}
+
+/// An open conversation, from `/api/v1/conversations`.
+///
+/// The app needs this for one reason: **a ring opens a conversation on the
+/// server**, so the phone was never told its id, and `/api/v1/reply` targets one
+/// specific conversation. Without it the question is sitting there and the
+/// composer has no way to answer it.
+nonisolated struct Waiting: Codable, Sendable, Hashable, Identifiable {
+    let conversation: String
+    let opened: Double?
+    let asked: String?
+    let answered: Bool?
+    let closed: Bool?
+    let waiting: Bool?
+    /// Additive: which channel this belongs to, so the app can group by agent
+    /// without a second round trip. Absent on a daemon that predates it.
+    let agent: AgentID?
+
+    var id: String { conversation }
+    var isOpen: Bool { waiting ?? (!(answered ?? false) && !(closed ?? false)) }
+}
+
+nonisolated struct ConversationsPage: Codable, Sendable {
+    let conversations: [Waiting]
 }
 
 /// One roster invalidation. It is a tick, not a fact: it says a cached row is
@@ -345,6 +409,8 @@ nonisolated struct RetaskResult: Codable, Sendable {
     /// "queued -- it will start after the current turn" is not "started".
     let delivered: Bool
     let queued: Bool
+    /// Echoed back, so the `you` event this produced can be recognised.
+    let clientToken: String?
 }
 
 nonisolated struct ResumeResult: Codable, Sendable {

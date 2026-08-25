@@ -37,13 +37,19 @@ DEFAULT_URL = local_url(HOOK_PATH)
 """Derived, never written out again. `endpoint.py` explains why: this constant
 and the daemon's bind address disagreed silently for as long as both existed."""
 
-HOOK_EVENTS = ("UserPromptSubmit", "PreToolUse", "Stop")
+HOOK_EVENTS = ("UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop")
 """Which events get a nudge.
 
-`PreToolUse` rather than `PostToolUse`: the assistant's `tool_use` record is
+`PreToolUse` is what makes the map live: the assistant's `tool_use` record is
 already in the transcript when the tool is *about* to run, so nudging before
 means the phone shows "running Bash" while it runs rather than after it
-finished. `PostToolUse` would add no record the daemon reads.
+finished.
+
+`PostToolUse` is here for exactly one field. It carries `duration_ms`, which is
+the only place a per-tool duration exists anywhere -- the transcript's own
+`durationMs` records are whole turns, and there is nothing per-call in the file
+at all. It deliberately does **not** make the daemon re-read the transcript;
+that would double every read to fill in a column.
 
 `SubagentStop` is deliberately absent -- a subagent finishing does not end the
 parent's turn, and treating it as one would close the phase early."""
@@ -116,12 +122,18 @@ NUDGE_BODY = '''
 
 try:
     payload = json.load(sys.stdin)
-    send({
+    nudge = {
         "session_id": payload.get("session_id"),
         "cwd": payload.get("cwd"),
         "transcript_path": payload.get("transcript_path"),
         "event": payload.get("hook_event_name") or KIND,
-    })
+    }
+    # The two extra fields PostToolUse carries and nothing else does. Still no
+    # model output and no tool arguments on the wire: an id and a number.
+    if nudge["event"] == "PostToolUse":
+        nudge["tool_use_id"] = payload.get("tool_use_id")
+        nudge["duration_ms"] = payload.get("duration_ms")
+    send(nudge)
 except Exception:
     pass
 sys.exit(0)
@@ -164,17 +176,23 @@ except Exception:
 try:
     payload = json.loads(raw)
     used = (payload.get("context_window") or {{}}).get("used_percentage")
-    # null before a session's first turn (§9.7). Reporting it as zero would draw
-    # an empty gauge on a session whose usage is simply unknown, so nothing is
-    # sent at all.
+    report = {{
+        "session_id": payload.get("session_id"),
+        "cwd": payload.get("cwd"),
+        "transcript_path": payload.get("transcript_path"),
+        "event": "StatusLine",
+    }}
+    # `used_percentage` is null before a session's first turn (§9.7), and the
+    # field is simply left out then -- reporting it as zero would draw an empty
+    # gauge on a session whose usage is unknown.
+    #
+    # The report itself is still sent. That is what tells the daemon this
+    # session HAS a statusline wrapper, which is a different fact from how full
+    # its context is: without it, "no first turn yet" and "no wrapper here" both
+    # arrive as silence, and the app has to render them differently.
     if isinstance(used, (int, float)):
-        send({{
-            "session_id": payload.get("session_id"),
-            "cwd": payload.get("cwd"),
-            "transcript_path": payload.get("transcript_path"),
-            "event": "StatusLine",
-            "context_used_percentage": used,
-        }})
+        report["context_used_percentage"] = used
+    send(report)
 except Exception:
     pass
 sys.exit(code)

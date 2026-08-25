@@ -139,6 +139,16 @@ nonisolated final class Link: Sendable {
         return page.conversation
     }
 
+    /// Every conversation the daemon still holds open, newest first.
+    ///
+    /// A ring opens a conversation server-side, so this is the only way the
+    /// phone can learn the id it has to answer. Older daemons carry no `agent`
+    /// field, which is why `Waiting.agent` is optional rather than assumed.
+    func conversations() async throws -> [Waiting] {
+        let page: ConversationsPage = try await post("api/v1/conversations")
+        return page.conversations
+    }
+
     private struct Delivered: Decodable { let delivered: Bool }
 
     /// Answer a question a ring opened. Distinct from `say`, which starts a new
@@ -165,10 +175,16 @@ nonisolated final class Link: Sendable {
 
     /// One request, composed server-side: two calls from a phone means a
     /// dropped network can leave an agent cancelled with nothing queued.
-    func retask(agent: AgentID, text: String, stopFirst: Bool) async throws -> RetaskResult {
-        try await post("api/v1/agents/retask", [
-            "agent": agent, "text": text, "stop_first": stopFirst,
-        ])
+    ///
+    /// `clientToken` is what makes the resulting `you` event identifiable as
+    /// *this* write. Sent only where the server reads it: `/say` and `/reply`
+    /// ignore the field, so passing it there would be a promise the wire does
+    /// not keep.
+    func retask(agent: AgentID, text: String, stopFirst: Bool,
+                clientToken: String? = nil) async throws -> RetaskResult {
+        var body: [String: Any] = ["agent": agent, "text": text, "stop_first": stopFirst]
+        if let clientToken { body["client_token"] = clientToken }
+        return try await post("api/v1/agents/retask", body)
     }
 
     func resume(agent: AgentID, cwd: String? = nil) async throws -> ResumeResult {
