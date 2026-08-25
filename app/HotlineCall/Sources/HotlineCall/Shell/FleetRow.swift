@@ -10,8 +10,13 @@ import SwiftUI
 struct FleetRow: View {
     let agent: Agent
     let height: Double
+    let isHero: Bool
     let swipeX: Double
-    let hideName: Bool
+    /// `nav` and `mo`, so the name's hand-off to the travelling copy is a term
+    /// in the staging table rather than a comparison against a model value
+    /// that jumps to its target the instant the transition starts.
+    let nav: Double
+    let mo: Double
     @Binding var titleFrame: [AgentID: CGRect]
     let onControl: (Capability) -> Void
 
@@ -58,7 +63,7 @@ struct FleetRow: View {
                         Text(agent.name)
                             .text(.rowName)
                             .foregroundStyle(Theme.ink)
-                            .opacity(hideName ? 0 : 1)
+                            .staged(.heroName, isHero ? nav : 0, mo)
                             // Measured in the list's own untransformed space,
                             // so the rect is right whatever the fleet layer is
                             // doing to itself mid-transition. Re-measured on

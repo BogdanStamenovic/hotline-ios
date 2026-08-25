@@ -119,6 +119,13 @@ nonisolated enum Role: Hashable, Sendable {
     case composer
     /// Message `k` from the bottom; 0 is the newest and arrives first.
     case message(k: Int)
+    /// The hero row's own name, hidden the instant the travelling copy takes
+    /// over.
+    case heroName
+    /// The channel header's real title, which appears exactly where the
+    /// travelling copy hides. Under Reduce Motion there is no flight, so it
+    /// fades in on its own window instead.
+    case headerTitle
 
     static let backChevron = Role.chrome(start: 0.28, span: 0.42)
     static let phaseChip = Role.chrome(start: 0.42, span: 0.42)
@@ -161,6 +168,13 @@ nonisolated enum Role: Hashable, Sendable {
         case .composer:
             let cp = win(e, 0.36, 0.5)
             return Effect(opacity: cp, offsetY: (1 - cp) * 74 * mo)
+
+        case .heroName:
+            return Effect(opacity: e > 0.008 ? 0 : 1)
+
+        case .headerTitle:
+            return Effect(opacity: mo == 0 ? clamp((e - 0.3) / 0.4, 0, 1)
+                                           : (e > 0.88 ? 1 : 0))
 
         case .message(let k):
             // Capped at 12: beyond the first screenful the stagger is dropped

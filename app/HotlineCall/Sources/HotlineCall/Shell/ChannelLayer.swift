@@ -49,10 +49,10 @@ struct ChannelLayer: View {
             Text(agent.name)
                 .text(.screenTitle)
                 .foregroundStyle(Theme.ink)
-                .opacity(titleOpacity)
                 // 98 pt is the hero's destination; the travelling copy and
                 // this label must agree to the point or the handover at
                 // e > 0.88 shows as a jump.
+                .staged(.headerTitle, nav, mo)
                 .frame(height: 34, alignment: .leading)
                 .padding(.top, HeroDestination.y)
 
@@ -83,12 +83,6 @@ struct ChannelLayer: View {
         .padding(.leading, HeroDestination.x)
         .padding(.trailing, Theme.edge)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// The hero's handover. Under Reduce Motion there is no flight at all, so
-    /// the real title fades in on its own window instead.
-    private var titleOpacity: Double {
-        mo == 0 ? clamp((nav - 0.3) / 0.4, 0, 1) : (nav > 0.88 ? 1 : 0)
     }
 
     /// Real, from the roster. The one thing on this screen that is a fact about

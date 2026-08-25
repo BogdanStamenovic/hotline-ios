@@ -35,6 +35,11 @@ struct FleetLayer: View {
     @ScaledMetric(relativeTo: .largeTitle) private var headerHeight: Double = 132
 
     @State private var scroll: Double = 0
+    /// Where the scroll was when the current settle started. `scroll` is the
+    /// *model* value, which `withAnimation` sets to its target immediately, so
+    /// virtualising against it alone would unmount every row the fling is
+    /// travelling past while it is still travelling past them.
+    @State private var scrollAnchor: Double = 0
     @State private var drag = DragArbiter()
     /// The one row currently pulled aside. Only one, ever: a second open row is
     /// a state nobody can act on and every list that allows it feels broken.
@@ -90,14 +95,15 @@ struct FleetLayer: View {
     @ViewBuilder
     private func rows(_ m: Metrics, width: Double) -> some View {
         let heroIndex = hero.flatMap { m.index(of: $0) }
-        ForEach(m.visible(scroll: scroll), id: \.self) { i in
+        ForEach(m.visible(from: scrollAnchor, to: scroll), id: \.self) { i in
             let id = m.order[i]
             if let agent = fleet[id] {
                 FleetRow(
                     agent: agent,
                     height: m.height(at: i),
+                    isHero: hero == id,
                     swipeX: swiped == id ? swipeX : 0,
-                    hideName: hero == id && nav > 0.008,
+                    nav: nav, mo: mo,
                     titleFrame: $titleFrames,
                     onControl: { onControl(agent, $0) })
                 .frame(width: width, height: m.height(at: i), alignment: .topLeading)
@@ -122,13 +128,13 @@ struct FleetLayer: View {
 
     @ViewBuilder
     private func pullAffordance(_ m: Metrics) -> some View {
-        if scroll > 4 {
+        if max(scroll, scrollAnchor) > 4 {
             PullLabel(text: pullChip == .refresh ? "RELEASE TO REFRESH" : "REFRESH",
                       armed: pullChip == .refresh)
                 .frame(height: max(scroll, 0), alignment: .center)
                 .frame(maxWidth: .infinity)
         }
-        if scroll < m.minScroll - 4 {
+        if min(scroll, scrollAnchor) < m.minScroll - 4 {
             PullLabel(text: briefLabel, armed: pullChip == .brief && briefOffered)
                 .frame(height: max(m.minScroll - scroll, 0), alignment: .center)
                 .frame(maxWidth: .infinity)
@@ -172,6 +178,7 @@ struct FleetLayer: View {
                 switch drag.axis {
                 case .vertical:
                     scroll = m.band(drag.scrollAtStart + value.translation.height)
+                    scrollAnchor = scroll
                     pullChip = chip(for: scroll, m)
                 case .horizontal:
                     guard let id = drag.row, let agent = fleet[id] else { return }
@@ -347,9 +354,15 @@ struct FleetLayer: View {
     private func settle(to target: Double, velocity: Double, spring: (Double, Double)) {
         let distance = target - scroll
         let v0 = abs(distance) < 1e-4 ? 0 : velocity / distance
+        scrollAnchor = scroll
         withAnimation(.interpolatingSpring(mass: 1, stiffness: spring.0,
-                                           damping: spring.1, initialVelocity: v0)) {
+                                           damping: spring.1, initialVelocity: v0),
+                      completionCriteria: .removed) {
             scroll = target
+        } completion: {
+            // The travel is over, so the mounted window can close back down to
+            // one screenful.
+            if scroll == target { scrollAnchor = target }
         }
     }
 }
@@ -450,10 +463,13 @@ private struct Metrics {
     /// Only what can be on screen, plus one row of margin either side. With
     /// four agents this is free; with four hundred it is the difference
     /// between a list and a slideshow.
-    func visible(scroll: Double) -> [Int] {
-        tops.indices.filter {
-            let top = tops[$0] + scroll
-            return top + heights[$0] > -heights[$0] && top < viewport + heights[$0]
+    func visible(from: Double, to: Double) -> [Int] {
+        let lo = min(from, to)
+        let hi = max(from, to)
+        return tops.indices.filter {
+            let low = tops[$0] + lo
+            let high = tops[$0] + hi
+            return high + heights[$0] > -heights[$0] && low < viewport + heights[$0]
         }
     }
 }

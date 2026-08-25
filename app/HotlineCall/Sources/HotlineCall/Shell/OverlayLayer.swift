@@ -14,7 +14,13 @@ struct OverlayLayer: View {
         ZStack(alignment: .topLeading) {
             Color.clear
 
-            if let hero, mo != 0, from != .zero, nav > 0.004, nav < 0.88 {
+            // Mounted for the whole transition, in both directions. Gating
+            // this on `nav` would gate it on the *model* value, which
+            // `withAnimation` sets to its target immediately -- so the copy
+            // would never be built on the way in and would linger on the way
+            // out. Its visibility is a term inside `Flight`, where the
+            // interpolated value actually reaches.
+            if let hero, mo != 0, from != .zero {
                 HeroTitle(name: hero.name, e: nav, from: from)
                     .zIndex(Z.hero)
             }
@@ -127,6 +133,10 @@ nonisolated struct Flight: ViewModifier, Animatable {
             .tracking(Self.tracking(ef, scale: scale))
             .scaleEffect(scale, anchor: .topLeading)
             .offset(x: lerp(from.minX, to.x, ef), y: lerp(from.minY, to.y, ef))
+            // The handover: the copy hides at e > 0.88 and the real title's
+            // opacity goes to 1 at the same instant. Below 0.008 the row's own
+            // name has not been hidden yet, so a second one here would double.
+            .opacity(e > 0.88 || e < 0.008 ? 0 : 1)
     }
 }
 
