@@ -95,9 +95,12 @@ struct FleetLayer: View {
     @ViewBuilder
     private func rows(_ m: Metrics, width: Double) -> some View {
         let heroIndex = hero.flatMap { m.index(of: $0) }
-        ForEach(m.visible(from: scrollAnchor, to: scroll), id: \.self) { i in
-            let id = m.order[i]
-            if let agent = fleet[id] {
+        // Keyed by agent, never by index. Index identity would recycle a row
+        // view onto a different agent when the roster reorders -- which is
+        // exactly what a blocked agent climbing the list does -- taking that
+        // row's animation state with it.
+        ForEach(m.visible(from: scrollAnchor, to: scroll), id: \.self) { id in
+            if let i = m.index(of: id), let agent = fleet[id] {
                 FleetRow(
                     agent: agent,
                     height: m.height(at: i),
@@ -463,14 +466,14 @@ private struct Metrics {
     /// Only what can be on screen, plus one row of margin either side. With
     /// four agents this is free; with four hundred it is the difference
     /// between a list and a slideshow.
-    func visible(from: Double, to: Double) -> [Int] {
+    func visible(from: Double, to: Double) -> [AgentID] {
         let lo = min(from, to)
         let hi = max(from, to)
         return tops.indices.filter {
             let low = tops[$0] + lo
             let high = tops[$0] + hi
             return high + heights[$0] > -heights[$0] && low < viewport + heights[$0]
-        }
+        }.map { order[$0] }
     }
 }
 

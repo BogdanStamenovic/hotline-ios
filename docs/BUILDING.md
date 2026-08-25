@@ -10,9 +10,13 @@ No Mac. Clean build is about 7 seconds.
 Result, verified by inspecting the file rather than trusting the exit code:
 
     Mach-O 64-bit arm64 executable  (magic 0xfeedfacf)
-    linked: SwiftUI, UIKit, Foundation, CoreFoundation
-    bundle: dev.stamenovic.hotlinecall, MinimumOSVersion 17.0, iPhoneOS
-    1.4 MB ipa / 1,369,384-byte binary
+    linked: SwiftUI, UIKit, Foundation, CoreFoundation, CoreGraphics
+    bundle: dev.stamenovic.hotlinecall, MinimumOSVersion 18.0, iPhoneOS
+    3.1 MB ipa
+
+`MinimumOSVersion` is 18.0 since the redesign: his phone is on 18.7.8,
+there is no second device to support, and `onGeometryChange` -- iOS 18 --
+is on the critical path for the scene change's hero flight.
 
 ## The three pieces
 
@@ -38,7 +42,7 @@ the same mismatch one layer down and they all vanish with the right toolchain.
 **Do not go debugging the NEON errors.** 6.3.3 is kept at
 `/mnt/iosbuild/env.sh` only for diffing.
 
-## Two gotchas worth keeping
+## Three gotchas worth keeping
 
 - **`swift sdk install`, not `xtool sdk install`.** On Linux the latter wants an
   `Xcode.xip`. The artifactbundle is a standard SwiftPM Swift SDK bundle.
@@ -46,6 +50,31 @@ the same mismatch one layer down and they all vanish with the right toolchain.
   `Package.swift`. It called all six sources clean for hours while the manifest
   could not compile at all (`defaultIsolation` needs tools-version 6.2, and it
   said 6.0).
+
+- **Adding or deleting a source file does not invalidate the build plan, and
+  the build says `Build complete!` anyway.** `xtool dev build` copies the
+  sources into `xtool/.xtool-tmp` and drives SwiftPM against that copy; when
+  the set of files changes, the cached plan is reused and *none of the new code
+  is compiled*. It is a green check that measured nothing -- the exact failure
+  this project keeps running into. After adding, moving or removing a file:
+
+        rm -rf .build xtool/.xtool-tmp
+
+  Editing an existing file is fine: incremental works and is about a second.
+
+## Verifying wire types without a phone
+
+The types in `Sources/HotlineCall/Wire/Wire.swift` import only Foundation, so
+they compile and run natively on Linux with the same toolchain. That is the
+only way to actually execute any of this app's code on this box, and it is
+enough to prove the decoders against the bytes archserver really sends:
+
+    source /mnt/iosbuild/env62.sh
+    curl -s -X POST -d '{}' http://<archserver>:8789/api/v1/agents > live-agents.json
+    swiftc -swift-version 6 main.swift Wire.swift -o wiretest && ./wiretest
+
+Worth doing after any wire change. It caught nothing this time, which is the
+point: the graceful-degradation claims are tested rather than asserted.
 
 ## Isolation, since the module is main-actor-by-default
 

@@ -67,7 +67,19 @@ final class Fleet {
 
     /// Which channel is open, if any. Nothing else reads it -- it exists to
     /// pick the long-poll's wait.
-    func foreground(_ id: AgentID?) { foregroundAgent = id }
+    func foreground(_ id: AgentID?) {
+        let wasOpen = foregroundAgent != nil
+        foregroundAgent = id
+        // The wait is chosen when the request is made, so a channel opening
+        // while the stream is parked in a 25 s poll would not sample for up to
+        // 25 s -- long enough to read as a dead instrument strip. Restarting
+        // costs one request and loses nothing: the cursor lives here, not in
+        // the task.
+        if wasOpen != (id != nil), stream != nil {
+            suspend()
+            begin()
+        }
+    }
 
     private var waitSeconds: Double {
         foregroundAgent == nil ? Self.idleWait : Self.sampleWait
