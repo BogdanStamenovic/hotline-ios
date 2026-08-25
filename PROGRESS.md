@@ -416,3 +416,61 @@ Writing both halves immediately found a gap: the app called `/api/v1/hangup`
 and the server had no such route.
 
 54 tests.
+
+## Outcome B's transport, and an ordering trap worth writing down
+
+### `ring/local.py` — ring his own app, nothing leaving the tailnet
+
+The server counterpart to the app. The only design where "everything over
+Tailscale" is literally true including the doorbell: no push, no APNs, no third
+party. The app holds a long-poll open, the server writes a ring down it, the app
+calls `reportNewIncomingCall` itself.
+
+**Presence is the long-poll, not a flag.** There is deliberately only one fact
+about whether the app is alive, because a flag plus a heartbeat can disagree and
+then something has to decide which is lying. While a poll is open the device is
+present; 45 s without one and it is gone.
+
+**The acknowledgement is the proof, and it is separate from presence.** The case
+that motivates it: the process is alive enough to poll but iOS refused to show
+the call — Do Not Disturb, already in a call, or the system simply said no.
+Presence would report success there and the call would vanish. So the app must
+say it put a call on screen, and no ack inside the window is `CallUnreachable`,
+which the chain turns into Linphone or a page.
+
+`rings_when_closed` is a **property returning False**, not a class attribute, so
+nobody can set it True after watching it work once with the app in the
+foreground. It cannot wake a process that is not running; that is a fact, not a
+setting.
+
+An absent app fails *before* ringing rather than after a 45 s ring-out — which
+is what lets the chain reach Linphone while he is still near the phone. All four
+silent-death paths (force-quit, reboot, expired certificate, iOS reclaiming the
+process) look identical from here: nothing is polling.
+
+71 tests.
+
+### The ordering trap — do not delete the repo first
+
+`hotline-80` caught this and it would have cost a 90-minute build.
+
+The plan said "delete the throwaway repo once the artifact is retrieved", and
+the workflow sets `retention-days: 5`. **GitHub artifacts live under the
+repository, not independently — deleting the repo destroys the artifact with
+it.** The diligence and the mistake point the same direction, which is exactly
+why it needs to be written down rather than remembered.
+
+**Strict order:**
+
+1. run completes
+2. download the tarball to `/mnt/iosbuild`
+3. verify it unpacks *and* `xtool sdk status` sees it
+4. **only then** delete `BogdanStamenovic/darwin-sdk-build`
+
+### The SIP probe stays up
+
+Asked whether Bogdan being unable to install Linphone was temporary or
+structural, because an open SIP port on the tailnet for an experiment that will
+never fire is not something to leave and forget. Verified answer: temporary —
+"my cellular right now is shit so im waiting till i get home". So C is still
+actionable, the probe stays running, and the test happens when he is on wifi.
