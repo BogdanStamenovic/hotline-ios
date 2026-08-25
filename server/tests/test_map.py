@@ -275,6 +275,35 @@ async def test_a_subagents_tools_nest_under_the_parent_phase(claude_home, double
     assert by_tool["Grep"].as_agent_json()["viaSubagent"] is True
 
 
+async def test_a_subagents_tools_still_nest_when_they_arrive_after_the_phase_closed(
+    claude_home, doubles
+):
+    """Measured end to end, and the reason `phase_at` exists.
+
+    A subagent's file is written after the parent's Stop, and a background one
+    outlives the parent's turn entirely -- so its tool calls are never in the
+    store while the phase that spawned them is still open. Without the fallback
+    every `viaSubagent` row lands unphased, which is precisely what §2 asked for
+    nesting to prevent."""
+    name = declared(doubles)
+    write(claude_home, SID, [prompt("delegate it"), calls("Agent", {"description": "look"})])
+    write(claude_home, SID, [says("delegated; it is still running")])
+    service = Service(LoopbackTransport(), FakePool())
+    await service.hook({"session_id": SID, "cwd": "/tmp", "event": "Stop"})
+    phase = service.store.phases(name)[0]
+    assert phase["ended_at"] is not None
+
+    # Only now does the subagent's own file appear.
+    write(claude_home, SID, [calls("Glob", {"pattern": "*.sh"}, sidechain=True)],
+          subagent="agent-late")
+    await service.hook({"session_id": SID, "cwd": "/tmp", "event": "PreToolUse"})
+
+    late = next(e for e in service.store.since(name, 0) if e.tool == "Glob")
+    assert late.via_subagent is True
+    assert late.phase_id == phase["id"]
+    assert len(service.store.phases(name)) == 1
+
+
 async def test_a_subagents_own_prompt_and_prose_are_not_the_parents(claude_home, doubles):
     """The trap `transcript.read_since` was written for: a subagent's internal
     report is not the parent's answer."""

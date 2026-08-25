@@ -177,6 +177,18 @@ def absorb(
     phase_id = str(open_phase["id"]) if open_phase else None
     pending_outcome = ""
 
+    def covering(at: float) -> str | None:
+        """Which phase a step belongs to when none is currently open.
+
+        Measured end to end: a subagent's tool calls are never in the store
+        while the phase that spawned them is still open. Its file is written
+        after the parent's Stop, and a background subagent outlives the parent's
+        turn entirely -- so with no fallback every `via_subagent` row would land
+        unphased, which is the thing §2 asked for nesting to avoid.
+        """
+        found = store.phase_at(agent, at)
+        return str(found["id"]) if found else None
+
     def close(at: float | None) -> None:
         nonlocal phase_id, pending_outcome
         if phase_id is None:
@@ -210,7 +222,7 @@ def absorb(
         elif event.kind == "tool":
             store.append_event(
                 agent, "tool", summarise(str(event.tool or ""), event.detail),
-                tool=str(event.tool or ""), phase_id=phase_id,
+                tool=str(event.tool or ""), phase_id=phase_id or covering(at),
                 via_subagent=event.is_sidechain, at=at,
             )
             result.events += 1
@@ -218,7 +230,7 @@ def absorb(
             result.last_tool_at = at
         elif event.kind == "compact":
             store.append_event(agent, "compact", describe_compaction(event.detail),
-                               tool="compact", phase_id=phase_id, at=at)
+                               tool="compact", phase_id=phase_id or covering(at), at=at)
             result.events += 1
             result.compactions += 1
             result.last_compaction = dict(event.detail)

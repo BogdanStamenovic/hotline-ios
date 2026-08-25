@@ -413,6 +413,28 @@ class Store:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def phase_at(self, agent_name: str, at: float) -> dict[str, Any] | None:
+        """The phase that was running when `at` happened, open or closed.
+
+        Needed because a subagent's tool calls do not arrive while the parent's
+        phase is still open. A background subagent outlives the turn that
+        spawned it entirely, and even a foreground one has its file written
+        after the parent's Stop, so by the time those records are read the phase
+        they belong to has already closed. Attributing them to the phase that
+        was current at their own timestamp is the honest answer; dropping them
+        on the floor as unphased is what happens otherwise.
+
+        Deliberately not bounded by `ended_at`: work a phase started is that
+        phase's work even when it finishes after it.
+        """
+        with self._lock:
+            row = self.db.execute(
+                "SELECT * FROM phases WHERE agent_name = ? AND started_at <= ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (agent_name, at),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def phase(self, phase_id: str) -> dict[str, Any] | None:
         with self._lock:
             row = self.db.execute("SELECT * FROM phases WHERE id = ?", (phase_id,)).fetchone()
