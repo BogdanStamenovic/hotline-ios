@@ -5,8 +5,12 @@ behind each choice that could reasonably have gone the other way.
 
 ## The one-line version
 
-hotline is *one router, many transports*. This adds a transport that rings.
-Nothing below the router changes.
+**Telegram rings. His app is the interface. Nothing carries voice.**
+
+That separation is Bogdan's, made on 2026-08-25, and it is the whole
+architecture. Everything proposed to him before it assumed the thing that
+*rings* is the thing you *talk through* — and paying for that assumption is
+what made every earlier option fragile.
 
 ```
   a Claude session, blocked, wanting Bogdan
@@ -16,209 +20,200 @@ Nothing below the router changes.
   ┌───────────────────────────────────────────────────────────┐
   │  hotline-iosd            (archserver, Tailscale-only)      │
   │                                                            │
-  │   ┌──────────────── RING TRANSPORT ─────────────────┐      │
-  │   │  apns.py │ sip.py │ page.py │ loopback.py        │      │  ← swappable
-  │   └───────────────────────┬─────────────────────────┘      │
-  │                MediaStream │ (PCM, both directions)         │
-  │   ┌───────────────────────▼─────────────────────────┐      │
-  │   │  CallSession                                     │      │
-  │   │    silero VAD → whisper → SessionPool.ask        │      │
-  │   │              ← piper  ← speakable                │      │
-  │   │    barge-in, one turn at a time, tool narration  │      │
-  │   └───────────────────────┬─────────────────────────┘      │
-  └───────────────────────────┼────────────────────────────────┘
-                              │  reused from hotline, unmodified
-                              ▼
-              hotline.pool.SessionPool  →  a live Claude session
+  │   1. write the question into a conversation  ─────────┐    │
+  │   2. ring him                                          │    │
+  │      ┌──────── RingChain, in order ──────────┐         │    │
+  │      │  telegram.py │ sip.py │ page (Discord) │         │    │
+  │      └──────────────┬────────────────────────┘         │    │
+  │            each wrapped in ConfirmedRing               │    │
+  │                     │                                   │    │
+  │   3. wait for him to type an answer  ◄─────────────────┘    │
+  └─────────────────────┼───────────────────────────────────────┘
+                        │ he opens the app
+                        ▼
+        ┌───────────────────────────────┐
+        │  HotlineCall.app  (sideloaded) │
+        │   pick an agent │ see who's live│
+        │   type          │ live transcript│
+        │                 │ what tool it's │
+        │                 │ running now    │
+        └───────────────┬───────────────┘
+                        │ POST /api/v1/say, over Tailscale
+                        ▼
+             hotline.pool.SessionPool.ask  →  a live Claude session
 ```
 
-Two things cross a boundary and it is worth being precise about which:
+Two things cross a boundary, and only one of them has to:
 
-- **The ring leaves the machine.** Always. Waking a sleeping iPhone traverses
-  Apple's APNs, in every outcome, whoever's certificate signs the push.
-- **Everything after the ring does not.** Audio, control, transcript, tool
-  events, session routing: direct over Tailscale, no cloud in the path.
+- **The ring leaves the tailnet.** Always, under every option, at every price.
+  Waking a locked iPhone means somebody's push infrastructure — Apple's,
+  Belledonne's, or Telegram's. Paying Apple $99 would only have changed whose.
+- **Everything else does not.** The app, the transcript, tool events, session
+  routing, the instructions he types: direct over Tailscale, no cloud.
 
-His instruction was "everything over Tailscale". That is achievable for
-everything except the doorbell, and saying otherwise would be a lie he would
-find out about the first time his phone did not ring. **APNs is the doorbell;
-Tailscale is the house.**
+**APNs is the doorbell; Tailscale is the house.** That sentence was written when
+the doorbell was expected to be Apple's, and it survived three changes of
+doorbell unchanged, which is a reasonable sign it was the right shape.
 
-## Why the ring transport is a plug and not an if-statement
+## Why the doorbell is a plug and not an if-statement
 
-`SPEC.md` §2 turned on a question nobody had answered: does a real CallKit ring
-need a paid Apple Developer account? It does — verified twice, see `PROGRESS.md`.
-But the design had to be written *before* that was known, and it still has to
-survive Bogdan choosing differently from the recommendation.
+This was designed before anyone knew what would ring, deliberately. It then went
+through **four** answers in one day: a paid Apple account, his own app over a
+tailnet socket, a stock SIP client, and finally Telegram — plus a late "actually,
+both". `RingTransport` absorbed every one of them **without a rewrite above it**,
+and "we will do both" turned out to be a configuration rather than a fork.
 
-So `RingTransport` (`server/src/hotline_ios/ring/base.py`) is the only place any
-outcome-specific code lives:
+A ring transport now has exactly one job:
 
-| module | outcome | rings when closed? | whose infrastructure |
+```python
+async def ring(self, target: CallTarget, *, timeout: float = 45.0) -> None:
+    """Ring, or raise. Returning means it rang."""
+```
+
+It used to also return a `MediaStream`. That existed only while the ringer was
+assumed to be the talker; when he split them, the audio came out of the
+interface entirely. The code shed it before this document did.
+
+| transport | rings a closed app? | whose infrastructure | state |
 |---|---|---|---|
-| ~~`apns.py`~~ | ~~A — paid ADP~~ | — | **dead, see below** |
-| `sip.py` | **C** — stock SIP client | yes | Apple, via the client vendor's certificate |
-| `local.py` | **B** — own app, persistent socket | *under investigation* | **none — pure Tailscale** |
-| `page.py` | fallback | no | Discord/APNs, today's behaviour |
-| `loopback.py` | tests and CI | n/a | none |
+| `telegram.py` | **yes** | Telegram's | built, **never run against his phone** |
+| `sip.py` (Linphone) | **yes** | Belledonne's | probe running, awaiting his handset |
+| `page` (Discord mention) | no — it is a notification | Discord's | already works today |
+| `loopback.py` | n/a | none | what the tests run against |
 
-**Outcome A is closed.** Bogdan answered the money question on 2026-08-25:
-"Just do whatever is free." The paid path is kept in this document only as the
-explanation for why the free paths look the way they do. It is not an option and
-should not be re-costed.
+`rings_when_closed` is on the protocol rather than in a document, because it is
+the single fact that decides whether a transport delivers the feature, and a
+fact that important should be impossible to lose.
 
-**B and C are both still open**, and he asked to be briefed on both before
-choosing. Neither is built as the default yet; the server side below is what
-they share, which is nearly everything.
+## A ring is not delivered because we asked for it
 
-`local.py` is the interesting one and it did not exist in the original spec. The
-free tier does **not** grant Push, but it *does* grant Background modes — that
-cell was verified independently as a control row, and the distinction matters. An
-app holding a live audio session is not suspended, which would let it keep a
-Tailscale socket open and call `reportNewIncomingCall` itself with **no push at
-all** — the only shape in which "everything over Tailscale" is literally true,
-doorbell included. `data-89` is stress-testing exactly this claim. It is recorded
-here as a transport slot, not as a working design: battery cost, audio-session
-interruption by a real phone call, and iOS reclaiming memory are all unaddressed,
-and the slot stays empty until someone has run it.
+`ConfirmedRing` is the piece that survived every change of design, and the only
+one that got *more* important each time.
 
-`rings_when_closed` is a property on the protocol rather than a note in a
-document, because it is the single fact that decides whether this project
-delivered the feature, and a fact that important should be impossible to lose.
+Every doorbell fails silently, in its own way. Telegram can refuse on a privacy
+setting. Belledonne can tighten an endpoint or drop a free tier. A sideloaded
+app's certificate expires after seven days. **In none of those does anything
+raise** — the call simply never arrives, the agent that placed it waits, and
+Bogdan is never told.
 
-### The ring and the media are one object, deliberately
+That is worse than the Discord mention it replaced, because he will have learned
+to trust it.
 
-The obvious factoring is two interfaces — one that rings, one that carries
-audio. It is wrong here. In every real transport the ring *establishes* the
-media path: a SIP INVITE carries the SDP that describes where RTP will go, and a
-VoIP push exists precisely so the app can open a WebRTC connection. Splitting
-them would mean inventing a correlation id to rejoin two halves that arrived
-together. So `RingTransport.ring()` returns a `MediaStream`, and returning
-normally *is* the definition of answered.
+So a transport must produce positive evidence, and silence is converted into
+`CallUnreachable`, which `RingChain` turns into the next transport and
+`hotline-call` turns into a Discord page. **It fails closed**: a transport with
+no confirmation channel is reported unreachable rather than trusted, because "I
+could not tell" has to mean no.
 
-## Why `CallSession` is a sibling of `VoiceCall` and not a subclass
+`RingChain` is only meaningful because of this. A fall-through chain over
+transports that cannot report success does not degrade — it stops at the first
+one that fails quietly.
 
-`SPEC.md` §4 says: bridge into hotline's existing pipeline, do not fork it. Both
-halves of that are honoured, but not at the same layer.
+### One correction, kept visible
 
-Read `hotline/src/hotline/voice.py` and roughly two thirds of `VoiceCall` is
-`discord.VoiceClient` lifecycle, a `discord.AudioSource` subclass, a
-`discord.sinks.Sink` subclass, and a pile of monkeypatches for six py-cord
-receive bugs. None of that means anything to a transport that is not Discord,
-and inheriting it would make **py-cord a hard dependency of a service whose
-entire job is to work when Discord is not the answer**.
+An earlier version justified this with an Apple Developer Forums thread in which
+an engineer supposedly said a packet tunnel provider is suspended on lock,
+"100%, no". **Nobody could verify that quote** — the page serves a JavaScript
+shell with none of the quoted terms, and the forums API 404s. It reached this
+design through three agents, gaining confidence at every hop and verified at
+none. I was the hop that wrote it into the source.
 
-What *is* transport-independent is imported and used unmodified:
+Then someone measured his actual phone: **20/20 `tailscale ping` answered while
+locked and idle, 0% loss, present in 14/14 peer-map samples.** The strong claim
+was simply wrong.
 
-- `hotline.audio.Segmenter` — silero VAD, 0.7 s silence to end an utterance
-- `hotline.audio.Transcriber` — faster-whisper `distil-large-v3`
-- `hotline.audio.Speaker` — Piper
-- `hotline.pool.SessionPool.ask(key, text, narrator=…, origin=…)` — the seam
-- `hotline.voice.speakable` — markdown to speech
-- `hotline.provenance.Origin` — how a spoken turn labels itself
+What stands is checkable and sufficient: a Tailscale contributor on
+`tailscale/tailscale#17575` describing a **5-10 s** wait while iOS starts the
+VPN from an on-demand rule, and a measured path that is DERP-relayed at
+92-623 ms and never once direct.
 
-`SessionPool.ask` is the whole integration. It already does routing (fresh /
-attach / named agent), stand-ins for busy sessions, and narration — and it is
-the exact call both `VoiceCall._handle` and hotline's iPhone Shortcut endpoint
-already make. Nothing under it is reimplemented.
+**The mechanism did not change**, which is exactly why the bad citation was
+dangerous rather than merely wrong: it made a sound design look like it depended
+on a lie.
 
-### Two consequences worth knowing before you touch this
+## `hotline-call` keeps `hotline-page`'s contract
 
-1. **The iOS bridge gets its own `Transcriber` and `Speaker`.** Sharing
-   hotline's would be cheaper in VRAM (~1.5 GB) but `load()`/`unload()` are not
-   reference-counted, so a Discord call hanging up would unload the model out
-   from under a live iOS call. Separate instances match what `bot.py` already
-   does per call, and cost VRAM instead of a race.
-2. **`origin` is not optional in spirit.** A spoken turn must arrive labelled as
-   spoken, because a mis-transcription on a `bypassPermissions` session has no
-   undo, and the session cannot exercise judgement about that if it cannot tell
-   speech from typing.
+There is already a `call-bogdan` skill and an unknown number of agent prompts
+doing `answer=$(hotline-page "...")`. Exit codes 0/1/2/3 mean exactly what they
+meant. Only one is added — **4, declined** — which a mention could not express.
 
-## Why the format conversion is not hotline's
+The subtlety the change of doorbell created: **the thing that rings and the
+thing he answers in are now different programs.** So the daemon writes the
+question into a conversation *before* ringing, rings, and then waits for him to
+type. A blocked agent still gets his words on stdout and never learns that two
+programs were involved. Ring-and-exit would have quietly broken every caller.
 
-`hotline.audio` has `stereo48_to_mono16` and `mono_to_stereo48`. The rate and
-channel count are in the function names, which is correct when Discord is the
-only caller and wrong the moment anything else is. SIP is 8 kHz mono G.711;
-WebRTC is 48 kHz. `media/pcm.py` is the same arithmetic with the constants
-passed in.
+Three consequences worth stating:
 
-G.711 is implemented there rather than depended on. That is the reason the SIP
-transport has **no third-party dependency at all**: µ-law is the one codec every
-SIP client on earth is required to support, and it is a 256-entry lookup table.
-The encode table is built by inverting the decode table by nearest neighbour
-rather than by reimplementing the segment arithmetic, so the two directions
-cannot drift apart — a round trip is exact by construction, which is what the
-test checks.
+- **The question is in the app before the phone rings.** Whether he opens it
+  during the ring or an hour later, it is there. He never answers to silence.
+- **A ring-out leaves the conversation open.** He may well answer five minutes
+  later, and closing it would throw away the reply he is about to give.
+- **A decline does not fall through.** He saw it and said not now; ringing him
+  by another route a second later is precisely what he was declining. This is
+  the difference between escalating and harassing.
 
-## Barge-in is why outbound audio is a queue
+## The app is a client, not a phone
 
-You cannot un-send a write. Interrupting Claude mid-sentence means discarding
-audio that has been synthesised but not yet played, so outbound frames sit in a
-`deque` the transport drains at the frame clock, and interrupting is
-`clear()`. hotline reached the same design for the same reason in
-`StreamSource`; this is not a coincidence, it is the constraint.
+Native Swift, sideloaded, re-signed weekly — a cost he accepted explicitly and
+unprompted. It has **no CallKit, no PushKit, no audio, and no keepalive**,
+because it does not have to ring. That deletes every one of the failure modes
+that made outcome B fragile: force-quit, reboot, certificate expiry, and an
+audio session killed by an ordinary incoming phone call.
 
-A `deque` rather than an `asyncio.Queue` specifically, because `asyncio.Queue`
-has no supported way to drop its contents — reaching into `_queue` breaks its
-unfinished-task accounting.
+Two decisions in it worth knowing:
 
-## `hotline-call` degrades to `hotline-page`, always
+- **Long-poll with a cursor, not a socket.** The phone moves between wifi and
+  cellular and every long-lived connection dies at the handover. A streaming
+  transport does not remove reconnect logic, it adds it, and then needs replay
+  on top so the gap loses nothing. Once you have built that cursor, the socket
+  carries almost nothing the cursor could not. When the server reports a gap the
+  transcript says so *in itself* — a hole nobody is told about looks exactly
+  like nothing happening.
+- **Every tool event reaches the screen.** hotline throttles narration because
+  speech is serial and would talk over the answer. A screen has neither
+  constraint. That is the whole reason the server emits tool events to both.
 
-The replacement for a thing that currently works must never be worse than the
-thing it replaces. If the daemon is down, no transport is registered, or the
-call rings out, `hotline-call` shells out to `hotline-page` with the same
-arguments and inherits its stdout, so `$(hotline-call …)` still yields his
-answer. Exit codes 0/1/2/3 are `hotline-page`'s exactly.
+## What is reused rather than rebuilt
 
-The one addition is **exit 4, declined** — which a mention could not express.
-A decline is a real answer, and it is the one case that is deliberately *not*
-escalated to a Discord page: he saw it and said not now, and ringing him again
-through another channel one second later is precisely what he was declining.
+`SPEC.md` §4 says do not fork hotline's pipeline, and nothing here does. The
+integration is one call:
+
+```python
+SessionPool.ask(key, text, narrator=…, origin=…)
+```
+
+which already handles routing (fresh / attach / named agent), stand-ins for busy
+sessions, and progressive tool events. `pool.bind` targets a named agent;
+`Registry` says who is alive. The daemon adds a `narrator` that also pushes each
+event to the phone — a pure consumer-side addition, no core changes.
+
+Since the voice route is gone, **the daemon no longer imports Whisper, Piper or
+soxr at all.** It needs hotline's source on the path, not its wheels.
+
+A turn from the app is labelled `kind="phone"`, deliberately not `"voice"`:
+there is no speech recognition in this path any more, and claiming a
+mis-hearing risk that does not exist would make the label useless where it does.
 
 ## Security
 
-Inherited from hotline, not reinvented, because the threat is identical: a call
-is root-equivalent. `bypassPermissions`, `%wheel NOPASSWD: ALL`, and speech
-recognition in the path with no confirmation step.
+Inherited from hotline, not reinvented, because the threat is identical: a
+delegated instruction runs with `bypassPermissions` on a box with
+`%wheel NOPASSWD: ALL`. **Treat it as root-equivalent.**
 
-- **Bind and gate on Tailscale.** Same source-IP allowlist as `hotlined`
-  (`HOTLINE_ALLOW_IPS`), plus the optional `X-Hotline-Key` second factor.
-- **The `PreToolUse` denylist already exists** and covers the catastrophic,
-  undoable commands. It is machine-wide, so it covers this transport for free.
-- **A call must identify itself as spoken** (see `Origin`, above).
+- Bind and gate on Tailscale — the same source-IP allowlist as `hotlined`, plus
+  the optional `X-Hotline-Key`. Loopback is always allowed, because a blocked
+  agent runs on this box and must not be locked out by its own allowlist.
+- The `PreToolUse` denylist already exists and is machine-wide, so it covers
+  this transport for free.
 
-## The ring must not assume the tailnet is up
+## What is not proven
 
-Not because the tunnel is dead when his phone is locked -- it is not, and that
-was measured rather than argued: **20/20 `tailscale ping` answered on a locked,
-idle phone, 0% loss, and the peer map sampled every 30 s for 20 minutes showed
-it present every time.** An earlier version of this document repeated a much
-stronger claim, sourced to an Apple engineer, that a packet tunnel provider is
-categorically suspended on lock. **That citation could not be verified by anyone
-who tried**, and the measurement contradicts its strong form. It is corrected
-here rather than deleted, because it travelled through three agents gathering
-confidence at each hop, and that is worth being able to see.
+Nothing here has run against his phone. Specifically:
 
-What survives is verifiable and sufficient: a Tailscale contributor on
-`tailscale/tailscale#17575` describes a **5-10 s wait** while iOS starts the VPN
-from an on-demand rule. Plus the measured path: DERP-relayed, 92-623 ms,
-172 ms jitter, direct never established.
-
-So the doorbell is allowed to leave the tailnet -- it always was, at any budget
--- and `ConfirmedRing` requires a transport to *prove* the phone rang rather
-than assuming it. It fails closed, because "I could not tell" has to mean no.
-
-## Open questions, tracked honestly
-
-- **Outcome C's load-bearing unknown:** a self-hosted, Tailscale-only SIP
-  backend actually causing the stock Linphone app to ring when closed. The push
-  goes through the vendor's gateway with the vendor's Apple certificate; whether
-  that gateway will do it for a private backend, for free, is being verified.
-  **If it will not, outcome C collapses** and Bogdan must know before he chooses.
-- **Outcome B's load-bearing unknown:** whether a persistent audio session can
-  keep a sideloaded app alive reliably enough to be a doorbell (`local.py`,
-  above). The usual objection — Apple rejects apps that do this — does not apply
-  to something sideloaded onto one's own phone, which is why it is worth
-  testing rather than dismissing. `data-89` has it.
-- Both unknowns are *empirical*, and neither is settled by reading. Whichever
-  survives being run is the one to build.
+- **The Telegram ring has never fired.** It needs an `api_id`, an `api_hash`, a
+  second account with its own phone number, and his handset.
+- **The SIP probe has never seen a real client.** It answers its own tests over
+  a real socket; no Linphone has registered to it.
+- **The app has never been built into an `.ipa`**, and has never run on a
+  device.
