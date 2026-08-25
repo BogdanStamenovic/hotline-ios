@@ -12,7 +12,7 @@ WorkingDirectory=/home/bodas/data/hotline-ios/server
 Environment=PYTHONPATH=/home/bodas/data/hotline/src:/home/bodas/data/hotline-ios/server/src
 # The doorbells, tried in order. "We will do both" is his instruction and this
 # is the whole of it -- adding or reordering a ring transport is this line.
-Environment=HOTLINE_IOS_RING=telegram
+Environment=HOTLINE_IOS_RING=telegram,sip
 EnvironmentFile=-/home/bodas/data/hotline-ios/.env
 ExecStart=/home/bodas/data/hotline-ios/server/.venv/bin/python -m hotline_ios.daemon \
   --host 100.72.2.62 --port 8789
