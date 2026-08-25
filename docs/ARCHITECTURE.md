@@ -187,6 +187,27 @@ recognition in the path with no confirmation step.
   undoable commands. It is machine-wide, so it covers this transport for free.
 - **A call must identify itself as spoken** (see `Origin`, above).
 
+## The ring must not assume the tailnet is up
+
+Not because the tunnel is dead when his phone is locked -- it is not, and that
+was measured rather than argued: **20/20 `tailscale ping` answered on a locked,
+idle phone, 0% loss, and the peer map sampled every 30 s for 20 minutes showed
+it present every time.** An earlier version of this document repeated a much
+stronger claim, sourced to an Apple engineer, that a packet tunnel provider is
+categorically suspended on lock. **That citation could not be verified by anyone
+who tried**, and the measurement contradicts its strong form. It is corrected
+here rather than deleted, because it travelled through three agents gathering
+confidence at each hop, and that is worth being able to see.
+
+What survives is verifiable and sufficient: a Tailscale contributor on
+`tailscale/tailscale#17575` describes a **5-10 s wait** while iOS starts the VPN
+from an on-demand rule. Plus the measured path: DERP-relayed, 92-623 ms,
+172 ms jitter, direct never established.
+
+So the doorbell is allowed to leave the tailnet -- it always was, at any budget
+-- and `ConfirmedRing` requires a transport to *prove* the phone rang rather
+than assuming it. It fails closed, because "I could not tell" has to mean no.
+
 ## Open questions, tracked honestly
 
 - **Outcome C's load-bearing unknown:** a self-hosted, Tailscale-only SIP

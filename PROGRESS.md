@@ -254,3 +254,89 @@ facts, not on principle.
 Neither is a dead end. Both are one small human action. **What is settled is
 that nothing else about this box stops an iOS app being built here** — which was
 the question, and the answer is better than expected.
+
+## The daemon, and four bugs found by running it
+
+`hotline-iosd` is the service `hotline-call` talks to. It runs **beside**
+`hotlined`, not inside it, for three reasons in order of weight: `hotlined`
+carries the Discord bridge and Shortcut path that this degrades *to*, and
+putting the experimental ringer in the same process as its own safety net loses
+both at once; hotline's `Transcriber`/`Speaker` `load()`/`unload()` are not
+reference-counted, so a Discord call hanging up would unload a model out from
+under a live phone call; and `HotlineBot.call` is a single-slot attribute that
+refuses a second join.
+
+It imports hotline rather than duplicating it — `PYTHONPATH` carries both
+`src` trees and it runs in hotline's existing venv, so the ~2 GB of ML
+dependencies exist once. Nothing was installed into hotline's venv.
+
+**Four things were wrong, and all four were found by executing it rather than
+reading it.** Recording them because three are the kind that look fine in review:
+
+1. **A TTS failure destroyed the whole call.** A `Service` with no speaker
+   turned a perfectly good connected call into an HTTP 500. Synthesis has many
+   runtime ways to fail — missing Piper voice, VRAM pressure — and none of them
+   are a reason to drop a call. He is on the line; he can say "hello?". `say()`
+   now logs, emits an error event, and continues in silence.
+2. **A call nobody hung up blocked forever.** `place()` awaited the call with no
+   ceiling, so a transport that never closes its own stream hung the HTTP
+   request indefinitely. There is now a hard `timeout` on the whole call,
+   separate from the ring timeout, which ends the call rather than leaking it
+   and the request together.
+3. **Query strings cannot reach a handler at all.** hotline's `httpd` does
+   `path = target.split("?", 1)[0]` and keeps nothing, and routes on exact path
+   strings — so neither `?since=41` nor `/events/<id>/<since>` was available.
+   The event feed moved to POST with the cursor in the body. That is a
+   constraint discovered by running it, not a REST preference: the alternative
+   was forking a server Bogdan has already read, to carry two integers.
+4. **The last failing test was the code being right.** Once it ran in hotline's
+   venv the *real* silero VAD was in the loop, and it correctly refused to hear
+   speech in a synthetic tone. A daemon-wiring test that fought that would have
+   been testing silero. The segmenter is now injectable — which is also
+   genuinely useful, since transports differ in sample rate.
+
+43 tests, 2.2 s.
+
+## A citation I hardened, and the measurement that corrected it
+
+`ConfirmedRing` was justified in its own docstring with an Apple Developer
+Forums thread (756941) in which an Apple engineer supposedly answered "100%, no"
+to whether a packet tunnel provider keeps running while the phone is locked.
+
+**I did not verify that quote.** It reached me from `data-89`, I wrote it into
+the source tree and a commit message as a stated platform fact, and `hotline-80`
+then tried to fetch it: the page serves a JavaScript shell with none of the
+quoted terms present, and the forums API 404s for the thread. `data-89` checked
+too and could not confirm it either; its own research agent had reported it as
+"VERIFIED, fetched in full". So the claim gained confidence at every hop and was
+never true at any of them. That is the laundering shape, and I was the hop that
+put it in the code.
+
+Then `data-89` measured his actual phone instead of arguing about the general
+case, and **the strong claim is simply wrong**:
+
+```
+tailscale ping, phone locked and idle:  20/20 answered, 0% loss
+peer map sampled every 30s for 20 min:  14/14 present, Online=True
+```
+
+The tunnel delivers to his locked phone. What survives is weaker and checkable:
+a Tailscale contributor on `tailscale/tailscale#17575` describing a **5-10 s**
+wait while iOS starts the VPN from an on-demand rule.
+
+**The mechanism did not change and should not have.** Failing closed is correct
+whether the tunnel is categorically suspended or merely unreliable — in both
+worlds, placing a call is not evidence that it rang. What changed is the
+sentence justifying it, in `watch.py` and `ARCHITECTURE.md`, and both now record
+the correction rather than quietly showing the better source. A good mechanism
+resting on a quote that evaporates when someone checks is how a sound design
+gets thrown out with its bad citation.
+
+Two process notes for whoever is next:
+
+- **I killed my own shell twice with `pkill -f <pattern>`** where the pattern
+  matched the shell command containing it. Exit 144, no damage, but it looks
+  like a crash. Don't `pkill` on a string that appears in your own command line.
+- The suite was silently taking 45 s because `ring()`'s 45 s default timeout
+  leaked into a test asserting an immediate distinction. hotline's handoff says
+  to suspect the tests when the suite is slow. It was right.
