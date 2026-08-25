@@ -1082,3 +1082,60 @@ supposed to make this impossible does not exist there.
 
 That keeps Plan B viable and cheap if `sdk build` still disappoints: tar ~925 MB,
 extract on Arch, point the Linux xtool at it.
+
+## 2026-08-25, ~21:30 — the SDK is installed, and the first real compile
+
+Run 32887877859 succeeded. `darwin.artifactbundle` contains
+`iPhoneOS26.2.sdk`, `iPhoneSimulator26.2.sdk` and `MacOSX26.2.sdk`, 771 MB
+packed / 3.1 GB extracted. Installed with **`swift sdk install`**, not
+`xtool sdk install` — the Linux `xtool sdk install` takes an `Xcode.xip`,
+whereas the artifactbundle is a standard SwiftPM Swift SDK bundle. `xtool sdk
+status` now says `Installed at /home/bodas/.swiftpm/swift-sdks/darwin.artifactbundle`.
+
+I kept the ordering I committed to: run → download → verify it unpacks *and*
+xtool sees it → and the throwaway repo is **still not deleted**, because the
+artifact lives under it and expires in 5 days.
+
+### A bug found for free, before the SDK even landed
+
+While waiting on the download I ran the build against *no* SDK on purpose, just
+to learn which gate xtool checks first. It checks the manifest:
+
+    Package.swift:20:18: error: 'defaultIsolation' is unavailable
+    note: 'defaultIsolation' was introduced in PackageDescription 6.2
+
+`swift-tools-version` said 6.0. **This app has never compiled**, and could not
+have, on any SDK. `swiftc -parse` had been reporting all six sources clean for
+hours — but `-parse` is syntax only and never reads `Package.swift` at all. The
+green check was measuring something adjacent to what I cared about. Bumped to
+6.2.
+
+### The compile itself: a clean, named failure
+
+It builds far enough to pull in real frameworks — the log is full of
+`SwiftUI.framework/.../arm64e-apple-ios.swiftinterface` and `iPhoneOS26.2.sdk`
+headers. Then:
+
+    failed to build module 'SwiftUI'; this SDK is not supported by the
+    compiler (the SDK is built with 'Apple Swift version 6.2 effective-5.10
+    (swiftlang-6.2.3.3.2 clang-1700.6.3.2)', while this compiler is 'Swift
+    version 6.3.3'). Please select a toolchain which matches the SDK.
+
+plus 153 `arm_neon.h` errors (`incompatible constant for this __builtin_neon
+function`, `invalid conversion between vector type 'bfloat16x8_t' and integer
+type 'int'`). Those are not a second problem: they are Apple's clang-1700
+headers being parsed by the open-source clang inside Swift 6.3.3, which is the
+same mismatch showing up one layer down.
+
+**Xcode 26.2 ships Apple Swift 6.2. I installed Swift 6.3.3.** Newer was not
+better; it had to match. Downloading `swift-6.2.3-RELEASE-ubuntu24.04`
+(1.0 GB) — `swiftlang-6.2.3.3.2` in the error string is what pins it to 6.2.3
+rather than 6.2.0.
+
+I am putting it beside the 6.3.3 tree rather than replacing it, so that if 6.2.3
+turns out to have its own problem I can diff the two rather than having thrown
+one away.
+
+**Still no binary.** Everything above is a build that failed. The honest state
+is: the SDK exists and is installed, the toolchain reaches SwiftUI, and the
+version mismatch has a named fix that has not yet been shown to work.
