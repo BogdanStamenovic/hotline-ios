@@ -1022,3 +1022,63 @@ Which is Plan B, written down before it was needed. Measuring first — the
 subtrees `SDKBuilder.swift` actually consumes — because the entire question is
 whether the iOS-device subset fits in a GitHub artifact, and that is a number to
 obtain rather than estimate.
+
+### Two wrong conclusions from one hang
+
+Once the CLI actually ran, `xtool sdk build --help` printed the thing that had
+been invisible for five runs:
+
+```
+USAGE: xtool sdk build <path> <output-dir> [--arch <arch>]
+  <path>   Path to Xcode.xip or Xcode.app
+  --arch   The architecture of the LINUX HOST the SDK is being built for
+```
+
+**`sdk build` takes an `.app`, and cross-builds for a Linux host.** That is
+precisely the requirement.
+
+So attempt 1 used the right subcommand. What it got wrong was omitting
+`<output-dir>` — and because the GUI binary blocked before argument parsing,
+that error was never seen. I read the silence as "wrong subcommand", switched to
+`install`, and `install` is the one that genuinely does nothing on macOS.
+
+**One hang produced two wrong conclusions**, each of which I wrote down with
+confidence:
+
+1. "`build` takes a `.xip`, so I called the wrong thing." — wrong; it takes
+   either, and I had simply left out an argument.
+2. "A macOS runner cannot produce the bundle, so Plan A is dead." — wrong; that
+   was `install`'s behaviour, generalised to the tool.
+
+The common cause is worth naming: **a tool that hangs teaches nothing, so every
+reading of it is a guess wearing a conclusion's clothes.** The fix was never a
+better theory, it was making it fail fast enough to talk.
+
+Also corrected: the step now asserts on the **artifact** rather than the exit
+code. `sdk install` exited 0 having done nothing, and a `rc == 0` check
+faithfully reported that as success — the same shape as the 18 HTTP tests that
+vanished when hotline was off `sys.path`. Both are checks that confirm the
+mechanism ran without confirming it produced anything.
+
+And macOS ships BSD `tar`, which has no `--transform`.
+
+### The measurements, which were worth taking regardless
+
+| piece | size |
+|---|---|
+| all of Xcode 26.3 on the runner | **4.3 G** |
+| iPhoneOS SDKs | 56 M |
+| MacOSX SDKs | 228 M |
+| iPhoneSimulator SDKs | 66 M |
+| toolchain `usr/lib/swift` | 525 M |
+| `clang` | 21 M |
+| every Frameworks/PrivateFrameworks | ~28 M |
+
+**Everything xtool keeps is roughly 925 MB.** My research agent had estimated
+3–8 GB for the bundle and 15–80 GB of transient space, and flagged both as
+estimates rather than measurements — correctly, because both were far too high.
+The runner's Xcode is already unpacked, so the extraction spike that was
+supposed to make this impossible does not exist there.
+
+That keeps Plan B viable and cheap if `sdk build` still disappoints: tar ~925 MB,
+extract on Arch, point the Linux xtool at it.
