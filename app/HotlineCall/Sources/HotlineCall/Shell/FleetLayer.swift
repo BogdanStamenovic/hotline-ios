@@ -18,8 +18,13 @@ import SwiftUI
 /// below is not optional.
 struct FleetLayer: View {
     let fleet: Fleet
+    let nav: Double
+    let hero: AgentID?
+    let mo: Double
     let reachable: Reachability
     let refreshing: Bool
+    @Binding var titleFrames: [AgentID: CGRect]
+    let onOpen: (AgentID) -> Void
     let onRefresh: () -> Void
     let onBrief: () -> Void
     let onControl: (Agent, Capability) -> Void
@@ -84,6 +89,7 @@ struct FleetLayer: View {
 
     @ViewBuilder
     private func rows(_ m: Metrics, width: Double) -> some View {
+        let heroIndex = hero.flatMap { m.index(of: $0) }
         ForEach(m.visible(scroll: scroll), id: \.self) { i in
             let id = m.order[i]
             if let agent = fleet[id] {
@@ -91,12 +97,20 @@ struct FleetLayer: View {
                     agent: agent,
                     height: m.height(at: i),
                     swipeX: swiped == id ? swipeX : 0,
+                    hideName: hero == id && nav > 0.008,
+                    titleFrame: $titleFrames,
                     onControl: { onControl(agent, $0) })
                 .frame(width: width, height: m.height(at: i), alignment: .topLeading)
+                .staged(role(for: i, heroIndex: heroIndex), nav, mo)
                 .offset(y: m.top(at: i) + scroll)
                 .zIndex(agent.isBlocked ? 1 : 0)
             }
         }
+    }
+
+    private func role(for i: Int, heroIndex: Int?) -> Role {
+        guard let heroIndex else { return .row(d: 0) }
+        return i == heroIndex ? .heroRow : .row(d: i - heroIndex)
     }
 
     // MARK: - The pull affordances
@@ -147,6 +161,7 @@ struct FleetLayer: View {
     private func arbiter(_ m: Metrics) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { value in
+                guard nav < 0.02 else { return }
                 if drag.axis == .none {
                     if hypot(value.translation.width, value.translation.height) < 8 {
                         if !drag.began { begin(value, m) }
@@ -168,6 +183,7 @@ struct FleetLayer: View {
             }
             .onEnded { value in
                 defer { drag = DragArbiter() }
+                guard nav < 0.02 else { return }
                 switch drag.axis {
                 case .vertical: endScroll(value, m)
                 case .horizontal: endSwipe(value)
@@ -239,10 +255,9 @@ struct FleetLayer: View {
             onSettings()
             return
         }
-        // Tapping a row opens its channel in step 3. Until the destination
-        // exists the arbiter resolves the tap and stops there rather than
-        // shipping a row that pretends to be pressable.
-    
+        guard let id = m.row(atViewportY: value.startLocation.y, scroll: scroll)
+        else { return }
+        onOpen(id)
     }
 
     private func endSwipe(_ value: DragGesture.Value) {
@@ -363,7 +378,7 @@ enum PullChip: Equatable { case none, refresh, brief }
 /// A value type so it can be built in `body` and handed to every helper without
 /// a second source of truth to keep in step -- a row's height depends on
 /// whether it is blocked, and that changes underneath the scroll.
-struct Metrics {
+private struct Metrics {
     let order: [AgentID]
     let viewport: Double
     let width: Double

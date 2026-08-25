@@ -73,3 +73,46 @@ to have *something* to sync, and the first point is required either way.
 **This is the real work of the redesign, and it is behind the UI rather than in
 it.** A beautiful channel list on top of a server that cannot say which
 conversations belong to an agent would be a facade.
+
+---
+
+## Redesign verdicts — 2026-08-26
+
+Two rounds of concepts were built and judged. Round 1 established the direction;
+round 2 was a discrimination test where every concept shared a fixed base
+(Kinetic Minimal's design language, moving with Editorial's cinematic staging)
+and pushed exactly one axis further.
+
+### Round 1
+
+| Concept | Verdict |
+|---|---|
+| Kinetic Minimal | *"The first one is peak its good"* |
+| Spatial Depth | *"undenaibly worse than the kinetic minimal one"* |
+| Living System | *"I like the idea but gimicky"* |
+| Editorial / The Index | *"Animtinos look the best (bassically cinematic) but the ui choices font execution absolutely atrochous."* |
+
+### Round 2
+
+| Concept | Axis | Verdict |
+|---|---|---|
+| **Kinetic Prime** | none — pure synthesis | ***"Bassically perfect absolutely perfect."*** **The base.** |
+| **Telemetry** | live instrumentation | *"i like all the telemetry especially the one inside agents. I want that implemented absolutely."* **Merged in.** |
+| Focus Pull | camera language | *"mid"* — discarded |
+| Cold Light | light as the medium | *"just kinetic just worse"* — discarded |
+
+### The conclusion worth keeping
+
+Both axes that spent their budget on **atmosphere** lost. The axis that spent it
+on **more true information per glance** won. Depth and lighting made the same
+screen prettier; telemetry made it say more. Design decisions on this app should
+be read against that: density of true things beats mood, and every animated
+quantity must encode a real number.
+
+### What gets built
+
+Kinetic Prime's shell — its tokens, layout, density, gestures and its
+single-progress-value scene change — with Telemetry's readouts inside it, plus
+Editorial's agree/kill transition rebuilt in that shell (its motion only; none of
+its typography or UI). Specified in `APP-PLAN.md`; the data behind the readouts
+is specified in `SERVER-PLAN.md` §9.

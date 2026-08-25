@@ -30,7 +30,12 @@ import os
 from pathlib import Path
 from typing import Any
 
-DEFAULT_URL = "http://127.0.0.1:8789/api/v1/hook"
+from .endpoint import local_url
+
+HOOK_PATH = "/api/v1/hook"
+DEFAULT_URL = local_url(HOOK_PATH)
+"""Derived, never written out again. `endpoint.py` explains why: this constant
+and the daemon's bind address disagreed silently for as long as both existed."""
 
 HOOK_EVENTS = ("UserPromptSubmit", "PreToolUse", "Stop")
 """Which events get a nudge.

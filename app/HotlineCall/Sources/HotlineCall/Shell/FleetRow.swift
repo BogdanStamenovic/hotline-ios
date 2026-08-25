@@ -11,6 +11,8 @@ struct FleetRow: View {
     let agent: Agent
     let height: Double
     let swipeX: Double
+    let hideName: Bool
+    @Binding var titleFrame: [AgentID: CGRect]
     let onControl: (Capability) -> Void
 
     var body: some View {
@@ -56,6 +58,17 @@ struct FleetRow: View {
                         Text(agent.name)
                             .text(.rowName)
                             .foregroundStyle(Theme.ink)
+                            .opacity(hideName ? 0 : 1)
+                            // Measured in the list's own untransformed space,
+                            // so the rect is right whatever the fleet layer is
+                            // doing to itself mid-transition. Re-measured on
+                            // every change because the row moves: reorder,
+                            // unpin, scroll.
+                            .onGeometryChange(for: CGRect.self) { proxy in
+                                proxy.frame(in: .named(Space.list))
+                            } action: { rect in
+                                titleFrame[agent.name] = rect
+                            }
                         if agent.isBlocked {
                             Text("NEEDS YOU")
                                 .text(.label(9.5))
