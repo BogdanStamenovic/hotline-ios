@@ -51,7 +51,10 @@ final class Store {
     /// it rather than starting a new conversation.
     func answer(_ question: Waiting) {
         answering = question
-        moments = [Moment(id: 1, kind: .claude, text: question.asked, tool: nil, at: question.at)]
+        // Empty, not seeded with the question: the feed replays from cursor 0
+        // and the question is already the first event in it. Seeding it here
+        // showed it twice.
+        moments = []
         follow(question.conversation)
     }
 
