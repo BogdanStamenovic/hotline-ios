@@ -12,12 +12,11 @@ let package = Package(
         .target(
             name: "HotlineCall",
             swiftSettings: [
-                // Main-actor-by-default. This is an app module whose state is
-                // all UI-facing, so the isolation that matters is the main
-                // actor and annotating each type would be noise. It also means
-                // the CallKit delegate callbacks -- which arrive nonisolated --
-                // have to say so explicitly, which is the correct place for the
-                // reader's attention.
+                // Main-actor-by-default. Every type in this module is
+                // UI-facing state, so annotating each one would be noise. The
+                // one thing that genuinely runs off the main actor -- Link's
+                // URLSession work -- says `nonisolated` at its own definition,
+                // which is where a reader looking for it would go.
                 .defaultIsolation(MainActor.self),
             ]
         ),
