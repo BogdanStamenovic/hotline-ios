@@ -1796,6 +1796,33 @@ kept below for their reasoning; each now carries its decision.
 >
 > Raising the target still stands on its own: there is no second device to support.
 
+### 12.4 The typeface — decided 2026-08-26
+
+**Bundle Geist.** Kinetic Prime, the concept he approved, is set in Geist, and
+that is the face he judged. SF differs visibly in width and character, and
+Prime's density and type ramp were tuned against Geist.
+
+Ship it with `Theme.family` retained as the one-line fallback to SF, because the
+SwiftPM-resource plus runtime-registration path through xtool is untested here
+and cannot be verified without the device. **Verify the font actually lands in
+the `.ipa` by inspecting the archive**, not by a clean build — a build that
+silently drops a resource looks identical to one that carries it.
+
+### 12.5 `done` vs `dead` — decided 2026-08-26
+
+**`done` gets its own dot appearance.** The daemon deliberately separates an
+agent that finished and said so from one whose process is gone and never said
+anything, and its own comments call that distinction the point. Collapsing them
+throws away a true fact at exactly the glance where it matters.
+
+So the dot vocabulary is **five** states, not four: live, busy, blocked, done,
+dead. The mapping from the daemon's `idle | working | done | dead` plus its
+separate `blocked` boolean stays a single named function, so it is one edit if
+the server's vocabulary moves again.
+
+This is the design rule the redesign won on, applied: density of true things per
+glance. A clean finish and a crash must not look the same.
+
 | 12.2 auto-open | **The recommended three-condition rule**, exactly as specced: one blocked agent only, cold launch or 5+ min backgrounded, not backed out of that channel in the last 60 s, and it runs the same transition his tap runs. |
 | 12.3 server fields | **The four formalities are approved** — `declared_at`, `contextAvailable`, `duration_ms`, `client_token`. **The `diff` column is declined:** the live patch card stays cut and §5.7's tool row ships instead. File content does not go on the wire. |
 
