@@ -1,99 +1,122 @@
 import SwiftUI
 
 struct ContentView: View {
-    @Environment(CallCenter.self) private var center
+    @Environment(Store.self) private var store
+    @State private var draft = ""
+    @FocusState private var writing: Bool
 
     var body: some View {
         NavigationStack {
-            Group {
-                switch center.phase {
-                case .idle, .ended:
-                    Idle(phase: center.phase)
-                case .ringing(let who, let reason):
-                    Ringing(who: who, reason: reason)
-                case .connected:
-                    InCall()
+            VStack(spacing: 0) {
+                AgentBar()
+                if let tool = store.currentTool {
+                    ToolLine(tool: tool)
                 }
+                Transcript()
+                Composer(draft: $draft, writing: $writing)
             }
             .navigationTitle("Hotline")
+            .navigationBarTitleDisplayMode(.inline)
+            .task { await store.refresh() }
+            .refreshable { await store.refresh() }
+            .animation(.snappy, value: store.currentTool)
         }
     }
 }
 
-private struct Idle: View {
-    let phase: CallPhase
+/// Who he is talking to, and who else is alive.
+private struct AgentBar: View {
+    @Environment(Store.self) private var store
 
     var body: some View {
-        ContentUnavailableView {
-            Label("No call", systemImage: "phone.down")
-        } description: {
-            if case .ended(let reason) = phase {
-                Text("Last call \(reason).")
-            } else {
-                Text("A session will ring you when it needs you.")
+        @Bindable var store = store
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                Chip(title: "newest", live: true, busy: false,
+                     selected: store.chosen == nil) { store.chosen = nil }
+                ForEach(store.agents) { agent in
+                    Chip(title: agent.name, live: agent.live, busy: agent.busy,
+                         selected: store.chosen == agent.name) { store.chosen = agent.name }
+                }
             }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
         }
+        .scrollIndicators(.hidden)
+        .background(.thinMaterial)
+        .overlay(alignment: .bottom) { Divider() }
     }
 }
 
-private struct Ringing: View {
-    let who: String
-    let reason: String
+private struct Chip: View {
+    let title: String
+    let live: Bool
+    let busy: Bool
+    let selected: Bool
+    let choose: () -> Void
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text(who).font(.largeTitle.bold())
-            Text(reason).font(.body).multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+        Button(action: choose) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(busy ? .orange : (live ? .green : .secondary))
+                    .frame(width: 7, height: 7)
+                Text(title).font(.footnote.weight(selected ? .semibold : .regular))
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(selected ? AnyShapeStyle(.tint.opacity(0.18))
+                                 : AnyShapeStyle(.quaternary),
+                        in: .capsule)
         }
-        .padding()
+        .buttonStyle(.plain)
     }
 }
 
-/// The in-call screen.
+/// What the agent is doing right now.
 ///
-/// The thing worth getting right here is the tool line. hotline already
-/// narrates tool calls aloud during long waits, and speech is serial -- it can
-/// only say one thing at a time and has to be throttled not to talk over the
-/// answer. A screen has neither constraint, so it shows every tool event as it
-/// lands. That is the whole reason the server emits them to both.
-private struct InCall: View {
-    @Environment(CallCenter.self) private var center
+/// This is the feature worth getting right. hotline narrates tool calls aloud
+/// during long waits because dead air is the real problem; a screen has none of
+/// speech's constraints, so it shows every one as it lands.
+private struct ToolLine: View {
+    let tool: String
 
     var body: some View {
-        VStack(spacing: 0) {
-            if let tool = center.currentTool {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(tool).font(.footnote.monospaced()).lineLimit(1)
-                    Spacer()
-                }
-                .padding(.horizontal).padding(.vertical, 8)
-                .background(.thinMaterial)
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
-            ScrollViewReader { proxy in
-                List(center.moments) { moment in
-                    Line(moment: moment).id(moment.id)
-                }
-                .listStyle(.plain)
-                .onChange(of: center.moments.count) {
-                    guard let last = center.moments.last else { return }
-                    withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
-                }
-            }
-
-            Button(role: .destructive) {
-                center.hangUp()
-            } label: {
-                Label("Hang up", systemImage: "phone.down.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .padding()
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(tool).font(.footnote.monospaced()).lineLimit(1)
+            Spacer()
         }
-        .animation(.snappy, value: center.currentTool)
+        .padding(.horizontal).padding(.vertical, 7)
+        .background(.thinMaterial)
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+}
+
+private struct Transcript: View {
+    @Environment(Store.self) private var store
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(store.moments) { moment in
+                        Line(moment: moment).id(moment.id)
+                    }
+                }
+                .padding()
+            }
+            .onChange(of: store.moments.count) {
+                guard let last = store.moments.last else { return }
+                withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+            }
+            .overlay {
+                if store.moments.isEmpty {
+                    ContentUnavailableView(
+                        "Nothing yet", systemImage: "text.bubble",
+                        description: Text("Give a session something to do."))
+                }
+            }
+        }
     }
 }
 
@@ -110,13 +133,62 @@ private struct Line: View {
                 .font(.caption).foregroundStyle(.orange)
         case .state:
             Text(moment.text).font(.caption2).foregroundStyle(.tertiary)
-        case .heard, .said:
-            VStack(alignment: moment.isFromHim ? .trailing : .leading, spacing: 2) {
-                Text(moment.isFromHim ? "you" : "claude")
-                    .font(.caption2).foregroundStyle(.secondary)
+        case .you, .claude:
+            VStack(alignment: moment.isFromHim ? .trailing : .leading, spacing: 3) {
                 Text(moment.text)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(moment.isFromHim ? AnyShapeStyle(.tint.opacity(0.16))
+                                                 : AnyShapeStyle(.quaternary),
+                                in: .rect(cornerRadius: 14))
+                Text(moment.at, style: .time)
+                    .font(.caption2).foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity, alignment: moment.isFromHim ? .trailing : .leading)
         }
+    }
+}
+
+private struct Composer: View {
+    @Environment(Store.self) private var store
+    @Binding var draft: String
+    @FocusState.Binding var writing: Bool
+
+    private var busy: Bool {
+        switch store.delivery {
+        case .sending, .working: true
+        default: false
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            if case .failed(let why) = store.delivery {
+                Label(why, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack(spacing: 8) {
+                TextField("Tell \(store.chosen ?? "the newest session")…",
+                          text: $draft, axis: .vertical)
+                    .lineLimit(1...5)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($writing)
+                    .submitLabel(.send)
+                Button {
+                    let text = draft
+                    draft = ""
+                    // The send is a Task, but clearing the field is synchronous
+                    // and on the same frame as the tap -- otherwise the text
+                    // lingers for a round trip and reads as a dropped input.
+                    Task { await store.send(text) }
+                } label: {
+                    Image(systemName: busy ? "hourglass" : "arrow.up.circle.fill")
+                        .font(.title2)
+                }
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || busy)
+            }
+        }
+        .padding(.horizontal).padding(.vertical, 8)
+        .background(.bar)
     }
 }
