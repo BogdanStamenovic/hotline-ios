@@ -1779,7 +1779,23 @@ kept below for their reasoning; each now carries its decision.
 
 | question | decision |
 |---|---|
-| 12.1 deployment target | **iOS 18.** His phone is on 18.7.8. Raise `Package.swift` to `.iOS(.v18)` and take `ScrollPosition` and `Observations`; two of the three custom scroll surfaces are deleted. |
+| 12.1 deployment target | **iOS 18.** His phone is on 18.7.8. `Package.swift` is `.iOS(.v18)`. **Two claims in the original question were wrong and are corrected below.** |
+
+> **Correction, verified against the SDK during step 0–3.**
+>
+> - **`Observations` is iOS 26+, not 18** (`@available(macOS 26.0, iOS 26.0, ...)`).
+>   It cannot be used on this target at all. Nothing is lost — `.task` plus
+>   `@Observable`'s per-property tracking is what the app uses — but do not plan a
+>   store↔view seam around it.
+> - **`ScrollPosition` deletes none of the three custom scroll surfaces.** Every
+>   reason §4.7 gives for making them custom — one recognizer arbitrating row-drag
+>   against scroll, pull-past-bottom-to-brief, per-surface pull-past-top meaning,
+>   rows whose order and height animate independently, the scene change reading row
+>   positions — is untouched by a programmatic offset read/write. **§4.7 is right;
+>   this row's original parenthesis was wrong.** All three surfaces are custom.
+>
+> Raising the target still stands on its own: there is no second device to support.
+
 | 12.2 auto-open | **The recommended three-condition rule**, exactly as specced: one blocked agent only, cold launch or 5+ min backgrounded, not backed out of that channel in the last 60 s, and it runs the same transition his tap runs. |
 | 12.3 server fields | **The four formalities are approved** — `declared_at`, `contextAvailable`, `duration_ms`, `client_token`. **The `diff` column is declined:** the live patch card stays cut and §5.7's tool row ships instead. File content does not go on the wire. |
 
