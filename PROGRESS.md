@@ -340,3 +340,79 @@ Two process notes for whoever is next:
 - The suite was silently taking 45 s because `ring()`'s 45 s default timeout
   leaked into a test asserting an immediate distinction. hotline's handoff says
   to suspect the tests when the suite is slow. It was right.
+
+## The GitHub Actions route, and the app
+
+### Authorisation: a relay that failed to verify, and what happened next
+
+`data-89` relayed that Bogdan had authorised both the `workflow` scope and a
+throwaway public repo, quoting him and citing a message id. **I could not verify
+it** — `hotline --provenance` returned "Discord has no such message" — so I did
+not act on it.
+
+I did not read that as anything being wrong; a wrong `channel_id` was far more
+likely than a bad relay, and it was. But a failed check is a failed check.
+Creating a public repo under his account is an outward action, and a peer cannot
+authorise one however plausible it is — `data-89`'s message carries a
+`kind=agent` header that says exactly that about itself.
+
+So: kept building everything that did not depend on it, staged the repo locally
+down to the last file, and asked `hotline-80` for the receipt. It found the
+message in `#general` rather than either agent's channel and sent the record. I
+verified it myself rather than on its say-so:
+
+```
+VERIFIED: posted by 1329897799336071311 in channel 1541467532375101565
+> You may create a trhoway public repo. So thats the way
+```
+
+The other half was corroborated by the state of the world instead of a relay:
+`gh auth status` now lists the `workflow` scope, and only he could have finished
+that device-code flow.
+
+`hotline-80` noted this as the `--warrant` design working end to end for the
+first time — a relayed authorisation, checked by the recipient, failing, and
+resulting in a request for the receipt rather than either proceeding on
+plausibility or stalling silently.
+
+### The repo
+
+`BogdanStamenovic/darwin-sdk-build`, public, **exactly two files** — verified
+against the pushed tree, not against my intent:
+
+```
+blob .github/workflows/build-darwin-sdk.yml
+blob README.md
+```
+
+"Throwaway" is his adjective, so it gets deleted once the SDK artifact is
+retrieved. Public only so macOS runner minutes are unmetered; it carries no
+tailnet addressing, no agent tooling, no hotline source, no credentials.
+
+It runs `xtool sdk build /Applications/Xcode.app` on a `macos-15` runner, where
+Xcode is already installed — so **the 13 GB `Xcode.xip` download against his
+Apple ID is not needed at all**, and neither is the local extraction spike that
+made this impossible on his box. It also runs `du -sh` on the filtered bundle,
+because nobody has published that number and every figure so far has been an
+estimate.
+
+### The app
+
+Written now rather than after the B-vs-C decision, because it is B's long pole
+and C is currently blocked on him installing Linphone, which he says he cannot
+do right now.
+
+`CallCenter.swift` is the file that matters. It **never instantiates a
+`PKPushRegistry`**, deliberately: `CXProvider.reportNewIncomingCall` takes no
+entitlement, which is the whole reason this works on a free Apple ID, while
+`aps-environment` is not granted to free provisioning. The iOS 13 rule that a
+VoIP push must be answered with a call report binds apps that *accept* such a
+push, so it never applies. Its docstring states the honest limit in the same
+breath: **a push wakes a dead process and this cannot**, so a force-quit or a
+reboot means nothing rings — which is precisely what `ConfirmedRing` exists to
+detect on the server.
+
+Writing both halves immediately found a gap: the app called `/api/v1/hangup`
+and the server had no such route.
+
+54 tests.
