@@ -1357,3 +1357,57 @@ machine it was made on; the script logs in on the laptop instead.
 
 **Everything left needs his hands.** Plug the phone in, unlock, tap Trust, run
 `~/hotline/sideload.sh`.
+
+## 2026-08-25, 22:45 — the install failed, and not on anything I built
+
+He plugged the phone in, tapped Trust, and logged into xtool on the laptop
+himself. The script found the phone, found the login, and got as far as
+provisioning:
+
+    [Unpacking app] 100%
+    [Preparing device] 100%
+    [Provisioning] 0%
+    Error: 403 FORBIDDEN_ERROR
+      "Your development team has reached the maximum number of registered
+       iPhone devices."
+
+Everything up to that point worked. The toolchain, the transfer, the pairing,
+the signing credentials — all fine. This is Apple refusing to register the
+device against his team.
+
+### What the account actually looks like
+
+    $ xtool ds teams list
+    Bogdan Stamenović [active]: 3GAQP72Y5Z
+    - Xcode Free Provisioning Program (iOS)
+
+    $ xtool ds devices list        -> EMPTY, rc=0
+    $ xtool ds certificates list   -> EMPTY
+    $ xtool ds identifiers list
+    - id: 598GX8Q86C
+      name: Spotify
+      identifier: com.spotify.client.3GAQP72Y5Z
+
+**The account has history.** That Spotify identifier is from an earlier
+sideload of his, with some other tool. So devices have been registered against
+this team before — the quota is real and already spent — even though the
+devices list reads empty.
+
+### The contradiction worth chasing
+
+`devices list` returns nothing while device *creation* says the maximum is
+reached. Two readings, and they lead to different fixes:
+
+1. Free-tier accounts simply cannot enumerate devices through this API, and the
+   quota is genuinely full. Fix: a fresh team, i.e. another Apple ID.
+2. **His phone is already registered under this team**, xtool cannot see that
+   because the list is empty, so it tries to *add* a device that is already
+   there and gets refused. Fix: get xtool to skip registration, and nothing
+   about the account needs to change.
+
+I do not yet know which. Guessing here would be expensive in exactly the way
+that matters — reading (1) sends him off to create an Apple ID he may not need.
+Two research agents are on the policy and the workarounds.
+
+**Do not assume the $99 program is the answer.** He killed it deliberately and
+it is not on the table.
