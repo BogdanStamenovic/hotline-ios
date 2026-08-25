@@ -653,3 +653,57 @@ there are no syntax errors and that the toolchain works. It does not prove the
 app compiles**, because everything touching SwiftUI, CallKit or OSLog needs the
 SDK that is still building. Typos are ruled out; type errors against Apple's
 frameworks are not.
+
+## The second doorbell — written rather than installed
+
+`data-89` caught that `sip.py` did not exist while `build_transport`'s own
+docstring used `HOTLINE_IOS_RING=telegram,sip` as the example of his
+"we will do both" — and `sip` was exactly the value it refused. He was about to
+send a SIP address with nowhere to put it.
+
+**It needs no `baresip`, and therefore no system package he has not approved.**
+That is possible only because it never carries audio:
+
+```
+REGISTER to sip.linphone.org  ->  INVITE his account  ->  180 Ringing  ->  CANCEL
+```
+
+His phone rings on the INVITE, linphone.org's own push wakes the app, he hangs
+up on it and opens ours. No SDP worth the name, no RTP, no codec. What is left
+is a text protocol and one MD5 digest.
+
+### Its evidence is the best in the project
+
+`ConfirmedRing` needs proof the phone is alerting.
+
+- Telegram gives "the server accepted the request" — an **inference**, and the
+  one `data-89` correctly identified as possibly not evidence at all.
+- SIP gives **`180 Ringing`**: the far end saying, in the protocol's own words,
+  that it is ringing.
+
+`183 Session Progress` counts too, because some proxies send it instead and
+treating that as silence would report a working doorbell as broken. And silence
+claims nothing — **no 180 means `CallUnreachable`**, even though the INVITE was
+sent and nothing errored. That property has a test named after it, because it is
+what makes the transport safe inside `ConfirmedRing`.
+
+### Verified, precisely
+
+- **The digest reproduces RFC 2617's own worked example byte for byte.** If that
+  ever breaks, authentication breaks with it and the error would be far less
+  obvious.
+- **The whole exchange against a real SIP server over real UDP** — real
+  datagrams, real 401 challenge, real authenticated re-REGISTER, real INVITE,
+  real CANCEL. Nothing mocked between the transport and the socket.
+- Declined (486), not-found (404), bad credentials (403) and silence all stay
+  distinguishable, so the chain falls through on exactly the right one.
+
+**Not verified: that `sip.linphone.org` behaves this way.** That needs his
+account. TLS is implemented and unverified; UDP is the default because it is the
+one that could be smoke-tested without credentials.
+
+One real bug the tests found: the response loop decremented a counter by a fixed
+5 s per read regardless of how long the read took, so a `180` followed
+immediately by a `200` ended the loop before the `200` was ever read.
+
+**68 tests, ruff clean, mypy clean.**
