@@ -629,3 +629,27 @@ So the mistake was mine and the defect was older than the mistake.
   alive long enough to page him.
 - **`pkill -f <pattern>` matches the shell command containing the pattern**, so
   it kills its own invocation. Exit 144, twice, before I stopped using it.
+
+## Partial verification of the app, without the SDK
+
+The Darwin SDK is still building, but the Swift compiler on this box is real, so
+some of the app can be checked now rather than after.
+
+```
+ContentView.swift      syntax OK
+HotlineCallApp.swift   syntax OK
+Link.swift             syntax OK
+Model.swift            syntax OK
+Store.swift            syntax OK
+```
+
+All five **parse** cleanly (`swiftc -parse`). And `Model.swift`, which imports
+only Foundation, **fully type-checks on Linux** — not just parses. `Link.swift`
+type-checks up to `import OSLog`, which is Darwin-only and is exactly the error
+it should give.
+
+That is worth stating precisely, because it is easy to oversell: **this proves
+there are no syntax errors and that the toolchain works. It does not prove the
+app compiles**, because everything touching SwiftUI, CallKit or OSLog needs the
+SDK that is still building. Typos are ruled out; type errors against Apple's
+frameworks are not.
