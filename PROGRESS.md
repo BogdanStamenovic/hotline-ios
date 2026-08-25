@@ -953,3 +953,72 @@ CANCEL after a final response is invalid. Until tonight the code had never
 reached a 200, so CANCEL had always been right.
 
 **73 tests, ruff clean, mypy clean.**
+
+## The SDK: four runs lost to the wrong binary, then a real dead end
+
+### The bug that cost four runs
+
+`data-89`'s `sample` of the hung process was decisive, and it disproved my own
+theory:
+
+```
+static App.main()          (SwiftUI)
+  runApp<A>(_:)            (SwiftUI)
+    NSApplicationMain      (AppKit)
+      -[NSApplication run] (AppKit)
+        ... __CFRunLoopRun
+```
+
+**I had been running a SwiftUI application.** The release bundle contains *two*
+executables named `xtool`:
+
+| path | what it is |
+|---|---|
+| `Contents/MacOS/xtool` | 34,613,840 bytes, Mach-O, links AppKit + SwiftUI |
+| `Contents/Resources/bin/xtool` | **705-byte bash wrapper** |
+
+`find … | head -1` sorts `MacOS` before `Resources`. So every run reached
+`NSApplicationMain` and blocked in `__CFRunLoopRun` waiting for a window server
+that does not exist on a headless runner — **including for `--version`**, before
+argv was ever examined. That is why closing stdin changed nothing, and why my
+"it is blocking on an Apple ID prompt" theory was wrong.
+
+The wrapper's entire body:
+
+```bash
+XTL_CLI=1 "$APP_PATH/Contents/MacOS/xtool" "$@"
+```
+
+Same binary, one environment variable, completely different program.
+
+**Found by downloading the asset and reading it locally**, not by spending a
+fifth CI run guessing. The step that had never once completed then passed.
+
+Worth keeping: the instrumentation I added to test a theory is what disproved
+it. The theory was cheap; the apparatus outlived it.
+
+### And then the actual dead end
+
+With the CLI running, `xtool sdk install` on the runner said:
+
+```
+Skipping SDK install; the iOS SDK ships with Xcode on macOS
+```
+
+…and exited 0.
+
+**xtool refuses to build a Darwin Swift SDK on macOS, by design** — there you
+simply use Xcode. So a macOS runner *cannot* produce the artifactbundle that
+Linux needs. That kills the whole "build the SDK on a runner and copy it back"
+strategy, which was Plan A from the moment the Xcode.xip download turned out to
+need his Apple ID.
+
+Only the **Linux** xtool can build the bundle, and it needs an `Xcode.app` or
+`Xcode.xip` to build it *from*.
+
+### So the runner becomes a file server
+
+Which is Plan B, written down before it was needed. Measuring first — the
+subtrees `SDKBuilder.swift` actually consumes — because the entire question is
+whether the iOS-device subset fits in a GitHub artifact, and that is a number to
+obtain rather than estimate.
