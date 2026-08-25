@@ -644,6 +644,22 @@ def test_the_installer_wraps_an_existing_statusline_rather_than_replacing_it(tmp
     assert json.loads(settings.read_text()) == written
 
 
+def test_the_installer_claims_an_empty_statusline_slot_without_wrapping_anything(
+    tmp_path, claude_home
+):
+    """The other half of the case: nothing configured, so there is nothing to
+    run through. His global settings.json is in this state today."""
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"theme": "dark"}))
+    result = hooks.install(settings_file=settings, scripts_dir=tmp_path / "h",
+                           url="http://127.0.0.1:1/api/v1/hook")
+    assert result["wrapped"] == ""
+    written = json.loads(settings.read_text())
+    assert written["statusLine"] == {"type": "command", "command": result["statusline"]}
+    assert written["theme"] == "dark", "everything else in the file is left alone"
+    assert "WRAPPED = ''" in Path(result["statusline"]).read_text()
+
+
 def test_the_statusline_wrapper_passes_the_previous_output_through(tmp_path, claude_home):
     """Byte for byte, and the exit code with it."""
     inner = tmp_path / "inner.sh"
