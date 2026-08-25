@@ -1796,6 +1796,16 @@ kept below for their reasoning; each now carries its decision.
 >
 > Raising the target still stands on its own: there is no second device to support.
 
+> **iOS 26 was offered and declined, 2026-08-26.** He volunteered to upgrade the
+> phone if the build needed it. It does not: the toolchain already carries
+> `iPhoneOS26.2.sdk` so targeting 26 is possible, but nothing in this document
+> depends on a 26-only API. `Observations` was the only one ever cited and the
+> app does not use it. Set against that, a major OS upgrade on the only test
+> device — mid-build, over a working sideloaded install, with re-pairing risk on
+> a setup that already cost us the device limit once — is real risk for no named
+> benefit. **Staying on 18.7.8.** Revisit only if a specific 26-only API turns
+> out to be required; bumping the target is one line.
+
 ### 12.4 The typeface — decided 2026-08-26
 
 **Bundle Geist.** Kinetic Prime, the concept he approved, is set in Geist, and
