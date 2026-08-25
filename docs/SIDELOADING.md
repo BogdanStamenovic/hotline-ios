@@ -12,9 +12,20 @@ on any tool I am missing.
 
 | # | Step | Who | Blocked on |
 |---|------|-----|-----------|
-| 1 | Compile `.ipa` | me | nothing, once the SDK is installed |
-| 2 | Sign it | him + me | his Apple ID, free tier |
-| 3 | Install it | him + me | phone plugged in once, "Trust" tapped |
+| 1 | Compile `.ipa` | me | **done** — builds in ~7 s |
+| 2 | Apple ID login | him | **done** 2026-08-25 — Team ID `3GAQP72Y5Z` |
+| 3 | Sign **and** install | me, with the phone attached | the cable |
+
+**Steps 2 and 3 turned out not to be separable.** He ran `xtool auth login`
+successfully, and `xtool dev build --ipa` still produces an **unsigned** binary
+afterwards — verified by reading the load commands, no `LC_CODE_SIGNATURE`.
+Signing happens at `xtool install`, which is also the command that takes
+`--udid`. That fits how free provisioning works: a development profile embeds
+the list of device UDIDs it is valid for, so nothing can sign *for his phone*
+without his phone being known. I am inferring the reason; the observation is
+that an authenticated `dev build` is unsigned and `install` is device-addressed.
+
+So there is now exactly **one** human step left rather than two.
 
 ## 1. Compile — mine
 

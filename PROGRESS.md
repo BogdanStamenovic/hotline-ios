@@ -1282,3 +1282,26 @@ twice at ~20:00 and the plumbing above it has changed since. He said he is
 leaving, so I am not test-ringing him to prove a plumbing change — a call that
 says nothing is the fake call in reverse. 79 tests pass, six of them new and one
 per defect.
+
+## 2026-08-25, 22:08 — he logged in; signing still needs the phone
+
+    $ xtool auth status
+    Logged in.
+    - Apple ID: bogdan.stamenovic@gmail.com
+    - Team ID: 3GAQP72Y5Z
+    - Token expiry: 25/08/2027
+
+He ran it himself, which is the option I recommended — the token is in xtool's
+store and I never saw the password.
+
+**The build is still unsigned afterwards.** Checked rather than assumed: no
+`LC_CODE_SIGNATURE` load command in the freshly built binary. `xtool dev build`
+does not sign; `xtool install` does, and it is the command that takes `--udid`.
+That is consistent with free provisioning, where a development profile carries
+the UDIDs it is valid for — you cannot sign for a phone you have not met.
+
+The useful consequence: **signing and installing are one step, not two**, so
+there is a single human action left rather than two. Plug the iPhone in, unlock,
+tap Trust. `usbmuxd` is socket-activated and correctly inactive with nothing
+attached; `xtool devices` blocks in that state, which is worth knowing before
+someone reads it as a hang.
