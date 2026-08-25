@@ -474,3 +474,104 @@ structural, because an open SIP port on the tailnet for an experiment that will
 never fire is not something to leave and forget. Verified answer: temporary —
 "my cellular right now is shit so im waiting till i get home". So C is still
 actionable, the probe stays running, and the test happens when he is on wifi.
+
+## He changed the design, twice, and both times it cost almost nothing
+
+### The decision — Telegram rings, his app talks (verified, 16:59)
+
+> Okay so this is the idea: make your own app for delegation talking excetera
+> which i will sideload every week.
+>
+> Telegram for the ring. And we can fully scrap the talking voice rout. Thats
+> bassically a gimic
+
+He spotted what all three agents had missed: **every option costed for him
+assumed the thing that rings is the thing you talk through.** B made one app do
+both and paid for it with a keepalive that dies when someone phones him; C took
+a stranger's app to get the ring and inherited its interface. Decoupling them
+dissolved, at once: CallKit, the local-ring question, the audio-session
+keepalive, the push entitlement, the reboot gap, the entire SIP/Belledonne
+dependency, and the audio transport.
+
+Then at 17:10, also verified: **"Okay we will do both"** — Telegram *and*
+Linphone, because they fail for unrelated reasons.
+
+### What the swappable transport actually bought
+
+Four doorbells in one day — paid Apple, own-app-over-socket, stock SIP,
+Telegram — plus a late "both". **Nothing above `RingTransport` was rewritten
+once**, and "both" turned out to be `HOTLINE_IOS_RING=telegram,sip`: a
+configuration, not a fork. That was the one design decision made before anything
+was known, and it is the one that paid.
+
+`RingTransport` also *lost* something: it used to return a `MediaStream`,
+because carrying audio only made sense while the ringer was the talker. It now
+rings and returns nothing.
+
+### Parking beat deleting, and it was not my call
+
+I started deleting the SIP and audio work when the design changed. `hotline-80`
+stopped me: the whole plan rested on Telegram being on his phone, which was
+unconfirmed, so C was the branch to return to. **Four hours later he asked for
+both**, and it came back in one `git mv` with its tests intact instead of an
+archaeology session.
+
+`data-89` put the general principle better than the specific call: it was not
+foresight about Telegram, it was that **deleting is irreversible and deferring
+costs nothing**, so the asymmetry decides it without predicting anything.
+
+### I paged him by accident, in a test
+
+**The worst thing I did today.** Testing `hotline-call` against a live daemon, a
+stale invocation from a minute earlier was still running, hit its timeout, and
+did exactly what it is designed to do: **fell back to the real Discord pager**.
+It DM'd Bogdan asking *"may I spend money on a UI agency"*. He answered "Nope".
+
+Two failures, both mine and neither the code's:
+
+1. **The test question was indistinguishable from a real one** — and it was in
+   the single category that requires his approval, which is the worst possible
+   one to fake. A test page should be unmistakably a test.
+2. **I did not check for a stale process before starting another.** Each Bash
+   call is a fresh shell, so `kill %1` referred to nothing, and the previous
+   daemon and CLI were both still alive. That is also why the first attempt's
+   routes appeared missing: an old daemon still held the port and the new one
+   never bound.
+
+Told him immediately and plainly rather than letting it sit. Nothing that can
+page him is running now, checked with `ps` rather than assumed. Tests from here
+use the loopback doorbell, which cannot reach Discord.
+
+The fallback itself behaved correctly and is the feature: adopting
+`hotline-call` is never worse than staying on `hotline-page`. It was aimed
+badly, not wrong.
+
+### The round trip works, end to end, against a real daemon
+
+Verified over real HTTP, not in a test harness:
+
+```
+agent runs hotline-call, blocks
+  -> daemon writes the question into a conversation
+  -> rings (loopback)
+  -> app lists what is waiting:
+       {"asked": "the ios build: may I spend money on a UI agency",
+        "waiting": true}
+  -> he types a reply
+  -> blocked agent gets "up to 500 euro" on stdout, exit 0, in 3 seconds
+```
+
+`/api/v1/agents` was checked against the **real** registry, not a stub: four
+live sessions, busy flags correct, and one that never declared itself listed
+under its derived name.
+
+**Running it found a gap nothing else would have.** A ring opens a conversation
+on the *server* — the phone was never involved and has no id for it — so the
+question sat there and the app could not find it. `/api/v1/conversations` and
+`/api/v1/reply` exist because of that.
+
+Also of note: the daemon now imports **no ML dependencies at all**. The whole
+suite runs in one venv, no GPU, no models — a consequence of the voice route
+going, not a goal.
+
+54 tests, ~2 s.
