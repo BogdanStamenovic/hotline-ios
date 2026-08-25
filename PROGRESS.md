@@ -1197,3 +1197,88 @@ worth paging him for: the repo is public, archived, two files, no secrets. One
 command when he is next at a terminal:
 
     gh auth refresh -h github.com -s delete_repo
+
+## 2026-08-25, 22:05 — the pager was reporting success while ringing nothing
+
+data-89 found it while wiring `hotline-call` into the `call-bogdan` skill. I
+verified all three claims against the running process before changing anything,
+and all three were real. **The daemon had `HOTLINE_IOS_RING=loopback` in its
+environment and had been up for 2 hours 35 minutes.** I started it that way to
+test and left it running. Every agent that paged in that window got
+
+    ringing via loopback+confirmed     exit 0
+
+and Bogdan was never contacted.
+
+This is the worst failure available to this component. It is the tool you reach
+for precisely when you cannot afford to be wrong about whether a human was
+reached, and it answered "yes" while doing nothing.
+
+### The config was my mistake; being *able* to make it silently was the defect
+
+Three layers each had enough information to catch this and none of them looked:
+
+- `/health` returned `"ok": true`. A health check whose purpose is to catch a
+  dead pager passed while the pager was a test double.
+- The call outcome said `"state": "ringing"` with no way to tell a real
+  doorbell from a fake one — `"via loopback+confirmed"` and `"via
+  sip+confirmed"` are the same sentence.
+- `hotline-call` exited 0.
+
+So the fix is at all three, not just at the config:
+
+1. **`is_fake` on transports**, propagated through `ConfirmedRing` (confirming a
+   fake ring confirms a fake ring) and through `RingChain` — where it is **any**
+   link, not all: a fake link answers instantly and the chain stops at the first
+   success, so `loopback,sip` provably never reaches the SIP leg.
+2. **`build_transport` refuses `loopback`** unless `HOTLINE_IOS_ALLOW_FAKE=1`.
+   Saying it twice is the point. This alone would have prevented the 2.5 hours.
+3. **`/health` reports `ok: false`** when the doorbell is fake, plus `fake` and
+   `ring_ready` fields, and the daemon logs `THIS DOORBELL RINGS NOTHING` at
+   boot.
+4. **`hotline-call` treats a fake ring exactly like an undeliverable one** and
+   falls back to `hotline-page`. A mention that arrives beats a call that does
+   not.
+
+### Two more, from the same report
+
+**`--transport` was silently ignored.** It reached the request body and stopped
+there: `place()` read `self.transport` unconditionally. A flag that does nothing
+is worse than no flag, because it is reached for exactly when the configured
+doorbell is already suspect. Now each doorbell is individually addressable and
+an unknown one is a 400 that names what is available:
+
+    $ hotline-call "..." --transport telegram
+    400: unknown transport 'telegram'; this daemon has: sip
+
+**`active_calls` only ever grew.** It counted every conversation ever opened, so
+three `--no-wait` smoke tests read as three live calls forever. It now counts
+open ones, with `conversations_held` beside it, and closed conversations are
+reaped after an hour. Unanswered ones are never reaped — he may open the app
+later and answer, and dropping it would discard the question he is about to
+answer.
+
+### A third instance of the same lie, found while fixing the first two
+
+Restarting on `sip` produced this:
+
+    "ok": true, "degradations": ["sip is not configured: needs SIP_USER, ..."]
+
+`ok: true` with the doorbell dead in the field right beside it. Two causes:
+`hotline.load_env()` defaults to **hotline's own** `.env`, which has no `SIP_*`,
+so this project's `.env` was never read; and nothing tied `ok` to whether the
+transport actually started. Both fixed — `ring_ready` now gates `ok`.
+
+That makes three separate places where "it works" was reported by something
+that had never checked. Worth naming as one pattern rather than three bugs.
+
+### State now
+
+    {"ok": true, "fake": false, "ring_ready": true,
+     "transport": "sip+confirmed", "degradations": []}
+
+**Not re-verified on his handset tonight.** The SIP doorbell rang his phone
+twice at ~20:00 and the plumbing above it has changed since. He said he is
+leaving, so I am not test-ringing him to prove a plumbing change — a call that
+says nothing is the fake call in reverse. 79 tests pass, six of them new and one
+per defect.
