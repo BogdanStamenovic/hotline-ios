@@ -13,6 +13,8 @@ import SwiftUI
 /// Step 0 places the rows and nothing else: no gesture, no momentum, no swipe.
 struct FleetLayer: View {
     let fleet: Fleet
+    let reachable: Reachability
+    let refreshing: Bool
     let onSettings: () -> Void
 
     @ScaledMetric(relativeTo: .body) private var rowHeight: Double = 88
@@ -32,7 +34,7 @@ struct FleetLayer: View {
             ZStack(alignment: .topLeading) {
                 Theme.bg
 
-                FleetHeader(fleet: fleet)
+                FleetHeader(fleet: fleet, reachable: reachable, refreshing: refreshing)
                     .frame(height: headerHeight, alignment: .bottomLeading)
                     .offset(y: scroll)
 
@@ -138,6 +140,8 @@ struct Metrics {
 
 struct FleetHeader: View {
     let fleet: Fleet
+    let reachable: Reachability
+    let refreshing: Bool
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -148,7 +152,8 @@ struct FleetHeader: View {
                 Text(counts)
                     .text(.label(11))
                     .monospacedDigit()
-                    .foregroundStyle(Theme.ink3)
+                    .foregroundStyle(stale ? Theme.ink4 : Theme.ink3)
+                    .animation(.enter, value: stale)
             }
             .padding(.horizontal, Theme.edge)
             .padding(.bottom, 18)
@@ -166,11 +171,24 @@ struct FleetHeader: View {
         }
     }
 
+    private var stale: Bool {
+        if case .stale = reachable { return true }
+        return false
+    }
+
+    /// The age of the data is the honest readout when archserver is
+    /// unreachable -- the counts are still true, they are just true about an
+    /// older moment.
     private var counts: String {
         let total = fleet.agents.count
         let blocked = fleet.blockedCount
         var out = "\(total) AGENT\(total == 1 ? "" : "S")"
         if blocked > 0 { out += " · \(blocked) BLOCKED" }
+        if refreshing {
+            out += " · REFRESH"
+        } else if case .stale(let since, _) = reachable {
+            out += since.map { " · \(ago($0).uppercased()) OLD" } ?? " · NO CONTACT"
+        }
         return out
     }
 }

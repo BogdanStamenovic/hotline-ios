@@ -34,15 +34,16 @@ private struct RootView: View {
 /// The store lives in `@State`, not in `RootView.body`.
 ///
 /// Building it inline would construct a fresh `Fleet` -- and with it a fresh
-/// roster -- on every re-evaluation of the parent's body. `.id(url)` gives the
-/// *view* a stable identity; only `@State` gives the object one.
+/// roster stream and a fresh roster -- on every re-evaluation of the parent's
+/// body. `.id(url)` gives the *view* a stable identity; only `@State` gives the
+/// object one.
 private struct ShellHost: View {
     let url: URL
     @State private var fleet: Fleet
 
     init(url: URL) {
         self.url = url
-        _fleet = State(initialValue: Fleet())
+        _fleet = State(initialValue: Fleet(link: Link(base: url)))
     }
 
     var body: some View {
