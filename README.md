@@ -132,10 +132,10 @@ docs/               architecture, and the five-minute SIP experiment
 
 ## Running the tests
 
-They need hotline's venv, because the pipeline imports its Whisper and Piper
-stack rather than duplicating it.
+One venv, no GPU, no models. The delegation path never touches Whisper or
+Piper, so this needs only hotline's *source* on the path, not its dependencies.
 
 ```bash
-PYTHONPATH=/home/bodas/data/hotline/src:/home/bodas/data/hotline-ios/server/src \
-  /home/bodas/data/hotline/.venv/bin/python -m pytest -q server/tests
+cd server
+PYTHONPATH=/home/bodas/data/hotline/src:src .venv/bin/python -m pytest -q tests
 ```
