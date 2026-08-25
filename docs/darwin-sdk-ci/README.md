@@ -2,8 +2,15 @@
 
 `build-darwin-sdk.yml` is the workflow that produced the Darwin Swift SDK this
 project builds against. It ran in a **throwaway public repo**
-(`BogdanStamenovic/darwin-sdk-build`, created with his explicit permission and
-deleted once the SDK was verified installed). It is kept here because the
+(`BogdanStamenovic/darwin-sdk-build`, created with his explicit permission).
+Its 805 MB artifact is deleted and the repo is **archived**, but it is **not
+deleted** -- that needs a scope this token does not have. One command from him
+finishes it:
+
+    gh auth refresh -h github.com -s delete_repo   # then: gh repo delete BogdanStamenovic/darwin-sdk-build --yes
+
+It is harmless in the meantime: public, archived, 14 KB, two files, no
+credentials. It is kept here because the
 workflow is where five separate failures are encoded, and losing it would mean
 rediscovering them.
 

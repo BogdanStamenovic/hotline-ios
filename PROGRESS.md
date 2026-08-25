@@ -1177,3 +1177,23 @@ also **unsigned** -- no `LC_CODE_SIGNATURE` load command, no
 `embedded.mobileprovision` in the bundle, both checked rather than assumed.
 Signing needs his Apple ID and installing needs the phone paired once by cable;
 `docs/SIDELOADING.md` has both, and neither is something I can route around.
+
+### The throwaway repo: artifact gone, repo archived, deletion needs him
+
+I said the repo would be deleted once the SDK was verified. Three of the four
+steps are done and the fourth is not mine to take:
+
+    $ gh repo delete BogdanStamenovic/darwin-sdk-build --yes
+    HTTP 403: Must have admin rights to Repository.
+    This API operation needs the "delete_repo" scope.
+
+What I did instead: **deleted the 805 MB artifact** (verified: the artifacts
+list is now empty) and **archived the repo** (`"archived": true`, 14 KB). The
+workflow is preserved at `docs/darwin-sdk-ci/`, scanned for credentials first.
+
+Granting a token a new scope is his action, not mine and not a peer's — I am
+not going to refresh my own credentials to widen what I can do. It is also not
+worth paging him for: the repo is public, archived, two files, no secrets. One
+command when he is next at a terminal:
+
+    gh auth refresh -h github.com -s delete_repo
