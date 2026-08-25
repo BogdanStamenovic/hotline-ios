@@ -1305,3 +1305,55 @@ there is a single human action left rather than two. Plug the iPhone in, unlock,
 tap Trust. `usbmuxd` is socket-activated and correctly inactive with nothing
 attached; `xtool devices` blocks in that state, which is worth knowing before
 someone reads it as a hang.
+
+## 2026-08-25, 22:35 — the app is on his laptop, verified there
+
+He asked for it to be beamed to the Arch laptop so he can sideload with the
+phone in hand. Better than my plan, which needed him at archserver.
+
+The laptop came up on the tailnet (`arch`, `100.79.194.90`, DERP-relayed,
+~400 ms, no direct path). Pushed over scp and **verified on the far side**
+rather than assuming the transfer was clean:
+
+    75eba10a...dd31  HotlineCall.ipa    (identical to archserver)
+    7566d62b...d57b  xtool.AppImage     (identical to archserver)
+    $ ./xtool.AppImage --version
+    xtool 1.17.0
+
+### Pre-flighting the laptop found there is nothing for him to install
+
+    usbmuxd            usbmuxd 1.1.1-4
+    libimobiledevice   libimobiledevice 1.4.0-2
+    fuse2              fuse2 2.9.9-6        <- AppImage runs directly
+    fuse3              fuse3 3.18.2-1
+
+So the pacman step in my script never fires. `/var/lib/lockdown` does not exist
+there either, so the phone has never been paired with the laptop and he will
+get the Trust prompt. Disk is at 92% with 4.3 GB free — fine for 55 MB, worth
+knowing before anything larger goes that way.
+
+**The laptop needs neither the Swift toolchain nor the 3.1 GB SDK.** Checked by
+running `xtool install` under a clean `HOME` where no SDK was visible: it never
+asked for one and went straight to device discovery.
+
+### The trap the script exists for
+
+`xtool install` with no phone attached prints **nothing** and blocks
+indefinitely. No error, no timeout. I sat through 60 s of it. The script checks
+with `idevice_id` first, which is the only thing that turns that silent hang
+into a readable message, so `libimobiledevice` is a hard requirement rather
+than a nicety.
+
+Dry-run on the laptop stops exactly where it should — at the phone check, and
+**before** prompting for any credentials:
+
+    xtool: xtool 1.17.0
+    Looking for the phone...
+    No iPhone visible. Check, in this order: ...
+
+`xtool auth status` there says `Logged out`. Deliberate: I did not copy the
+auth token from archserver. It is his Apple ID credential and it stays on the
+machine it was made on; the script logs in on the laptop instead.
+
+**Everything left needs his hands.** Plug the phone in, unlock, tap Trust, run
+`~/hotline/sideload.sh`.
