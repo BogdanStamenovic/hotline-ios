@@ -150,3 +150,107 @@ requirement to clear it for; deleting caches speculatively is just churn.
 The 591 GB on `/mnt/windows` stays as the escape hatch if the toolchain turns out
 to want more than 17 GB. It costs one `mkfs.ext4` on a file, run by Bogdan at the
 keyboard, and it is one `rm` to undo.
+
+## The build attempt — how far this Arch box actually gets
+
+Run 2026-08-25. **Result: everything works except the one thing that needs
+Bogdan's Apple ID.** Recorded in full because the negative half is the useful
+half.
+
+### Setup
+
+`/mnt/windows/hotline-ios-build.img`, ext4, loop-mounted at `/mnt/iosbuild`.
+Verified before trusting it: symlinks, the executable bit, and **hardlinks** —
+the last because xtool's extractor explicitly depends on hardlinks between files
+inside and outside the wanted set, which is why NTFS cannot host this directly.
+
+**I sized that image wrong and it mattered.** I created it at 120 GB assuming
+`truncate` would give a sparse file. ntfs3 did not — `du` reported 120 G
+apparent *and* 120 G actual, and `/mnt/windows` dropped from 591 G to 466 G. My
+own command printed both numbers and I read past them. `hotline-80` caught it
+and Bogdan noticed the space disappear and asked what was creating a drive on
+his Windows partition, which is a completely fair thing to be alarmed by.
+
+Corrected to 30 GB: `e2fsck -fp` → `resize2fs 30G` → `truncate -s 30G`, in that
+order, unmounted, with the 1.07 GB download parked on plain NTFS first so it did
+not have to be fetched twice. **ext4 grows online but only shrinks offline**,
+which is the actual argument for sizing small now: growing later is free and
+needs no downtime, so there was never a reason to pre-allocate for a worst case
+that is currently unreachable anyway.
+
+### What works, verified by running it
+
+| step | result |
+|---|---|
+| Swift 6.3.3 (`ubuntu24.04` build) on Arch | **works** — `swift --version` clean |
+| `swiftc hello.swift && ./hello` | **works** — printed `swift on arch works` |
+| xtool 1.17.0 AppImage | **works** — `xtool --version` clean |
+| `xtool new HotlineCall --skip-setup` | **works** — full SwiftUI project scaffolded |
+| `xtool dev build` reaching SwiftPM planning | **works** |
+| The Darwin iOS SDK | **BLOCKED** |
+
+Two Arch-vs-Ubuntu ABI gaps had to be solved on the way, and both were solved
+**without installing anything system-wide** — everything lives in a private
+`shim/` directory on `LD_LIBRARY_PATH`, and `rm -rf /mnt/iosbuild` undoes all of
+it:
+
+- `libncurses.so.6` — Arch ships only the wide build (`libncursesw.so.6`).
+  Symlinked, which is fine for `swift`/`swift-package`. It is *not* enough for
+  `lldb`, which wants versioned symbols the wide build does not export; the
+  debugger is therefore not working and is not on the critical path.
+- `libxml2.so.2` and `libicu*.so.74` — Arch is on libxml2 soname **16** and ICU
+  **76**. Those are major soname bumps, so symlinking would have produced a
+  crash later instead of an error now. Fetched the real Ubuntu 24.04 `.deb`s
+  from `archive.ubuntu.com` and extracted just the `.so` files. Replicating what
+  the package manager would have done, at a lower level, rather than forcing it.
+
+### The blocker, exactly
+
+```
+$ xtool dev build
+error: No valid Swift SDK bundles found at /home/bodas/.swiftpm/swift-sdks.
+$ xtool sdk status
+Not installed
+$ xtool sdk install --help
+USAGE: xtool sdk install <path>
+ARGUMENTS:
+  <path>   Path to Xcode.xip or Xcode.app
+```
+
+There is no download-it-for-you path and no third-party source. From xtool's own
+`Installation-Linux.md`:
+
+> Download **Xcode 26** from […]. The URL above requires authentication, so make
+> sure to visit it in your browser rather than running `curl`. You'll be asked to
+> log in with your Apple ID and accept the license agreement.
+
+`xtool auth` is gated the same way — even `xtool new` prompts for an Apple ID
+login unless given `--skip-setup`, because it registers a bundle id with Apple
+Developer Services.
+
+Checked for a way around it and did not find an honest one. `theos/sdks` hosts
+extracted iOS SDKs publicly, but the newest is **iPhoneOS16.5** and it was last
+pushed 2024-11-23 — far too old for an iOS 26 device, and it is not a Swift SDK
+bundle in the form xtool wants. Recorded as investigated and rejected on the
+facts, not on principle.
+
+### So the two ways forward, both needing him
+
+1. **He downloads `Xcode.xip`** (Apple ID, browser, ~13 GB) and I run
+   `xtool sdk install` locally. Note the extraction spike: xtool unpacks the
+   *entire* Xcode.app — every platform's SDK, not just iOS — before filtering.
+   Real users failed at 15 GB free and one at 80 GB. The image would need to
+   grow first, which is now a one-line online `resize2fs`.
+2. **A GitHub Actions macOS runner**, where Xcode is already installed, so
+   `xtool sdk build /Applications/Xcode.app` needs no Apple ID and no 13 GB
+   download at all. Copy back only the filtered bundle.
+   **Blocked on two things of his:** `gh` is authenticated as
+   `BogdanStamenovic` but its token scopes are
+   `admin:public_key, gist, read:org, repo` — **no `workflow` scope**, so
+   pushing a `.github/workflows/` file will be rejected and it needs
+   `gh auth refresh -s workflow`. And macOS runner minutes are unmetered only
+   for **public** repos, which is his call every time.
+
+Neither is a dead end. Both are one small human action. **What is settled is
+that nothing else about this box stops an iOS app being built here** — which was
+the question, and the answer is better than expected.
