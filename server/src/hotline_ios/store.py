@@ -26,6 +26,7 @@ the first cursor already solves.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -110,7 +111,26 @@ CREATE TABLE IF NOT EXISTS phases (
   started_at REAL NOT NULL, ended_at REAL
 );
 CREATE INDEX IF NOT EXISTS phases_agent ON phases(agent_name, started_at);
+CREATE INDEX IF NOT EXISTS phases_open ON phases(agent_name, ended_at);
 """
+
+MIGRATIONS = {
+    # Per-subagent byte offsets, as JSON. Not a second INTEGER because there is
+    # one sidechain file per subagent and they are appended to concurrently with
+    # the main transcript; see `transcript.sidechain_paths`.
+    "transcript_sidechains": "ALTER TABLE agents ADD COLUMN transcript_sidechains TEXT",
+    # `context_window.used_percentage` from the statusLine payload, 0..1. NULL
+    # until a first sample arrives -- the CLI reports null before a session's
+    # first turn, and storing that as zero would draw a full context gauge on a
+    # session that has used none of it.
+    "context_used": "ALTER TABLE agents ADD COLUMN context_used REAL",
+    "context_used_at": "ALTER TABLE agents ADD COLUMN context_used_at REAL",
+}
+"""Columns added after the first schema shipped.
+
+`CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, and
+the database serving his phone already existed, so new columns need a real
+`ALTER TABLE` guarded by what is already there."""
 
 
 @dataclass(frozen=True)
@@ -209,7 +229,15 @@ class Store:
             # than as an empty feed three days later.
             self.db.execute("PRAGMA foreign_keys=ON")
             self.db.executescript(SCHEMA)
+            self._migrate()
             self.db.commit()
+
+    def _migrate(self) -> None:
+        """Add columns the first schema did not have. Caller holds the lock."""
+        have = {row["name"] for row in self.db.execute("PRAGMA table_info(agents)")}
+        for column, statement in MIGRATIONS.items():
+            if column not in have:
+                self.db.execute(statement)
 
     def close(self) -> None:
         with self._lock:
@@ -283,6 +311,121 @@ class Store:
     def history_generation(self, name: str) -> int:
         row = self.agent(name)
         return int(row["history_generation"]) if row else 0
+
+    # ---- where the transcript reader has got to -------------------------
+
+    def read_position(self, name: str) -> tuple[int, dict[str, int]]:
+        """`(main transcript offset, per-sidechain-file offsets)`.
+
+        Both halves are durable on purpose. Keeping the sidechain offsets in
+        memory would make a daemon restart replay every subagent's whole file
+        into the map as if it had just happened.
+        """
+        row = self.agent(name)
+        if row is None:
+            return 0, {}
+        offset = int(row["transcript_offset"] or 0)
+        try:
+            raw = json.loads(row["transcript_sidechains"] or "{}")
+            sidechains = {str(k): int(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+        except (ValueError, TypeError):
+            # A corrupt blob costs a replay of the subagent files, not a crash.
+            log.warning("unreadable sidechain offsets for %s; starting them over", name)
+            sidechains = {}
+        return offset, sidechains
+
+    def set_read_position(self, name: str, offset: int, sidechains: dict[str, int]) -> None:
+        with self._lock:
+            self.ensure_agent(name)
+            self.db.execute(
+                "UPDATE agents SET transcript_offset = ?, transcript_sidechains = ?, "
+                "updated_at = ? WHERE name = ?",
+                (int(offset), json.dumps(sidechains), time.time(), name),
+            )
+            self.db.commit()
+
+    def set_context_used(self, name: str, fraction: float, *, at: float | None = None) -> None:
+        """Record `context_window.used_percentage / 100` for a session.
+
+        Only ever called with a real sample. The CLI reports `null` before a
+        session's first turn and the caller drops that rather than storing zero:
+        "unknown" and "none used" are different states and the app renders them
+        differently.
+        """
+        with self._lock:
+            self.ensure_agent(name)
+            self.db.execute(
+                "UPDATE agents SET context_used = ?, context_used_at = ?, updated_at = ? "
+                "WHERE name = ?",
+                (float(fraction), time.time() if at is None else at, time.time(), name),
+            )
+            self.db.commit()
+
+    # ---- phases ----------------------------------------------------------
+
+    def open_phase(
+        self,
+        phase_id: str,
+        agent_name: str,
+        title: str,
+        *,
+        conversation_id: str | None = None,
+        started_at: float | None = None,
+    ) -> None:
+        """Start a phase. The title is frozen here and never rewritten.
+
+        §2: a title that shifts under a finger mid-scroll is worse than a duller
+        one that holds still. What arrives later is the `outcome`, a separate
+        field, so the row reads ask-then-answer rather than mutating in place.
+        """
+        with self._lock:
+            self.ensure_agent(agent_name)
+            self.db.execute(
+                "INSERT OR REPLACE INTO phases "
+                "(id, agent_name, conversation_id, title, outcome, started_at, ended_at) "
+                "VALUES (?, ?, ?, ?, NULL, ?, NULL)",
+                (phase_id, agent_name, conversation_id, title,
+                 time.time() if started_at is None else started_at),
+            )
+            self.db.commit()
+
+    def close_phase(
+        self, phase_id: str, *, outcome: str | None = None, ended_at: float | None = None
+    ) -> bool:
+        """Idempotent: closing a phase twice is not an error, and the second
+        close does not overwrite the first outcome with a null."""
+        with self._lock:
+            cur = self.db.execute(
+                "UPDATE phases SET ended_at = ?, outcome = COALESCE(?, outcome) "
+                "WHERE id = ? AND ended_at IS NULL",
+                (time.time() if ended_at is None else ended_at, outcome, phase_id),
+            )
+            self.db.commit()
+        return cur.rowcount > 0
+
+    def open_phase_of(self, agent_name: str) -> dict[str, Any] | None:
+        """The agent's one unfinished phase, newest if somehow there are several."""
+        with self._lock:
+            row = self.db.execute(
+                "SELECT * FROM phases WHERE agent_name = ? AND ended_at IS NULL "
+                "ORDER BY started_at DESC LIMIT 1",
+                (agent_name,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def phase(self, phase_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.db.execute("SELECT * FROM phases WHERE id = ?", (phase_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def phases(self, agent_name: str, *, limit: int = MAX_PAGE) -> list[dict[str, Any]]:
+        """Newest first, which is the order a phone scrolls them in."""
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT * FROM phases WHERE agent_name = ? ORDER BY started_at DESC LIMIT ?",
+                (agent_name, max(1, min(int(limit), MAX_PAGE))),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     # ---- conversations ---------------------------------------------------
 
