@@ -1037,3 +1037,21 @@ def test_elapsed_prefers_when_the_agent_started_over_when_this_store_noticed(box
 
     row = next(r for r in service.agents()["agents"] if r["name"] == "data-88")
     assert row["declaredAt"] == pytest.approx(1787701448.731)
+
+
+def test_a_live_agent_is_never_asked_whether_it_could_be_resumed(box, monkeypatch):
+    """`brief_for` globs the projects directory and reads the handoff file, and
+    the roster is recomputed on every request and on every pass of a parked
+    long-poll. Paying that per live agent to answer a question whose answer is
+    always "it is still running" would make the roster cost scale with his
+    disk."""
+    asked = []
+    monkeypatch.setattr(hotline.revive, "brief_for", lambda agent: asked.append(agent))
+    box.declare("running", "s1")
+    box.live("s1", tmux="hl-80:@1.%1")
+    box.declare("gone", "s2")
+
+    found = {row["name"]: row for row in service_for(box).agents()["agents"]}
+
+    assert [r.name for r in asked] == ["gone"]
+    assert {c["id"]: c for c in found["running"]["controls"]}["resume"]["enabled"] is False
