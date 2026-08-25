@@ -71,6 +71,24 @@ nonisolated final class Link: Sendable {
         return page.conversation
     }
 
+    private struct Conversations: Decodable { let conversations: [Waiting] }
+
+    /// Questions agents have rung him about, newest first.
+    func waiting() async throws -> [Waiting] {
+        let page: Conversations = try await post("api/v1/conversations", [:])
+        return page.conversations
+    }
+
+    private struct Delivered: Decodable { let delivered: Bool }
+
+    /// Answer a question a ring opened. Distinct from `send`, which starts a new
+    /// conversation -- this one unblocks an agent already waiting on it.
+    func reply(_ text: String, to conversation: String) async throws {
+        let _: Delivered = try await post("api/v1/reply", [
+            "conversation": conversation, "text": text,
+        ])
+    }
+
     func events(conversation: String, after cursor: Int) async throws -> EventPage {
         try await post("api/v1/events", [
             "call_id": conversation, "since": cursor, "wait": 25,

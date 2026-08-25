@@ -46,6 +46,25 @@ enum Delivery: Equatable, Sendable {
     case failed(String)
 }
 
+/// A question an agent rang him about.
+///
+/// These are opened on the SERVER -- the phone was never involved and has no id
+/// for one until it asks. That is why the app lists them rather than only
+/// tracking conversations it started itself; without this the question sits
+/// there and cannot be found, which is exactly what happened the first time the
+/// round trip was run.
+struct Waiting: Identifiable, Hashable, Sendable, Codable {
+    let conversation: String
+    let opened: Double
+    let asked: String
+    let answered: Bool
+    let closed: Bool
+    let waiting: Bool
+
+    var id: String { conversation }
+    var at: Date { Date(timeIntervalSince1970: opened) }
+}
+
 struct ServerEvent: Codable, Sendable {
     let seq: Int
     let kind: String

@@ -14,6 +14,11 @@ final class Store {
     /// What the agent is running right now. hotline already emits these; a
     /// screen can show every one because it has none of speech's constraints.
     private(set) var currentTool: String?
+    /// Questions agents have rung him about and are blocked waiting on.
+    private(set) var waiting: [Waiting] = []
+    /// The question he is currently answering, if any. When this is set, what he
+    /// types goes back to the blocked agent rather than starting something new.
+    private(set) var answering: Waiting?
     var chosen: String?
 
     private let link: Link
@@ -26,6 +31,7 @@ final class Store {
 
     func refresh() async {
         do {
+            waiting = try await link.waiting().filter(\.waiting)
             agents = try await link.agents()
             // If the session he was talking to has gone, say so rather than
             // silently retargeting his next message at a different agent.
@@ -41,12 +47,30 @@ final class Store {
         }
     }
 
+    /// Open a question an agent is blocked on. What he types next goes back to
+    /// it rather than starting a new conversation.
+    func answer(_ question: Waiting) {
+        answering = question
+        moments = [Moment(id: 1, kind: .claude, text: question.asked, tool: nil, at: question.at)]
+        follow(question.conversation)
+    }
+
     func send(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         moments.append(Moment(id: nextLocalID(), kind: .you, text: trimmed, tool: nil, at: .now))
         delivery = .sending
         do {
+            if let answering {
+                // An agent is blocked on this exact question. Answering it is
+                // not the same as saying something new, and getting that wrong
+                // leaves it blocked forever while he thinks he replied.
+                try await link.reply(trimmed, to: answering.conversation)
+                self.answering = nil
+                waiting.removeAll { $0.conversation == answering.conversation }
+                delivery = .idle
+                return
+            }
             let conversation = try await link.send(trimmed, to: chosen)
             delivery = .working(since: .now)
             follow(conversation)

@@ -8,6 +8,9 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                if !store.waiting.isEmpty, store.answering == nil {
+                    WaitingBanner()
+                }
                 AgentBar()
                 if let tool = store.currentTool {
                     ToolLine(tool: tool)
@@ -21,6 +24,40 @@ struct ContentView: View {
             .refreshable { await store.refresh() }
             .animation(.snappy, value: store.currentTool)
         }
+    }
+}
+
+/// Questions an agent is blocked on.
+///
+/// This is what the ring was for. It sits above everything else because a
+/// blocked agent is the one thing in the app with someone waiting on the other
+/// end of it.
+private struct WaitingBanner: View {
+    @Environment(Store.self) private var store
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(store.waiting) { question in
+                Button { store.answer(question) } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "bell.badge.fill")
+                            .foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(question.asked).font(.subheadline).multilineTextAlignment(.leading)
+                            Text("waiting on you — \(question.at, style: .relative)")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.caption).foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal).padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+                Divider()
+            }
+        }
+        .background(.yellow.opacity(0.12))
     }
 }
 
@@ -162,13 +199,22 @@ private struct Composer: View {
 
     var body: some View {
         VStack(spacing: 6) {
+            if let answering = store.answering {
+                // He must be able to see WHICH question he is answering, or a
+                // reply can land against the wrong blocked agent.
+                Label("Answering: \(answering.asked)", systemImage: "arrowshape.turn.up.left")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if case .failed(let why) = store.delivery {
                 Label(why, systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack(spacing: 8) {
-                TextField("Tell \(store.chosen ?? "the newest session")…",
+                TextField(store.answering == nil
+                            ? "Tell \(store.chosen ?? "the newest session")…"
+                            : "Answer…",
                           text: $draft, axis: .vertical)
                     .lineLimit(1...5)
                     .textFieldStyle(.roundedBorder)
