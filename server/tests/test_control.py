@@ -474,7 +474,7 @@ async def test_retask_echoes_the_client_token_and_carries_it_on_the_row(box):
 
     out = await service.retask("hotline-80", "hello", client_token="abc-123")
 
-    assert out["clientToken"] == "abc-123"
+    assert out["client_token"] == "abc-123"
     rows = [e for e in service.store.since("hotline-80", 0) if e.kind == "you"]
     assert [r.client_token for r in rows] == ["abc-123"]
     assert rows[0].as_json()["client_token"] == "abc-123"
@@ -997,14 +997,14 @@ async def test_the_control_endpoints_answer_over_real_http(box):
 async def test_say_and_reply_echo_the_client_token(box):
     service = service_for(box)
     out = await service.say("look at the build", None, client_token="tok-1")
-    assert out["clientToken"] == "tok-1"
+    assert out["client_token"] == "tok-1"
     assert await eventually(lambda: any(
         e.client_token == "tok-1" for e in service.store.since("(unattributed)", 0)
     ))
 
     conversation, _ = service._open_conversation(None, "ring")
     answered = await service.reply(conversation, "yes", client_token="tok-2")
-    assert answered["clientToken"] == "tok-2"
+    assert answered["client_token"] == "tok-2"
     rows = service.store.conversation_events(conversation)
     assert [r.client_token for r in rows if r.kind == "you"] == ["tok-2"]
 
