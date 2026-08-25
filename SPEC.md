@@ -24,53 +24,71 @@ everything on the server side of that: session routing, voice, STT/TTS, Discord.
 **Read its `PLAN.md`, `handoff.md` and `PROGRESS.md` before designing anything.**
 You are building the iOS client and the transport it needs, not a second hotline.
 
-## 2. The one thing that decides the architecture — settle it FIRST
+## 2. SETTLED — he decided, 2026-08-25 16:59 UTC
 
-A real ring on a locked/backgrounded iPhone means **CallKit** (the native call UI)
-driven by a **PushKit VoIP push**. iOS does not let a sideloaded app hold a
-background socket open to wake itself.
+**This section used to be the open architecture question. It is closed**, and
+not by any of the answers that were on the table. Verified message
+`1541854587424735242`, his words:
 
-**SETTLED, 2026-08-25.** `hotline-ios` verified it and `hotline-80` re-verified it
-independently against Apple's live capabilities table, parsing raw cells with a
-control row rather than trusting a summary:
+> Okay so this is the idea: make your own app for delegation talking excetera
+> which i will sideload every week.
+>
+> Telegram for the ring. And we can fully scrap the talking voice rout. Thats
+> bassically a gimic
 
-    Push notifications   ADP=yes  ADEP=yes  free=(empty)
-    App groups           ADP=yes  ADEP=yes  free=YES     <- control
-    Background modes     ADP=yes  ADEP=yes  free=YES     <- control
+Three decisions:
 
-The free column *can* carry a mark, so the empty cell is a real no. **No
-`aps-environment` on free provisioning means PushKit cannot even register.** A
-real ring from his own app therefore requires the paid Apple Developer Program.
+1. **His own app**, sideloaded, re-signed weekly — a cost he accepted knowingly
+   and unprompted.
+2. **Telegram is the doorbell.** Not our app, not SIP, not APNs.
+3. **The voice route is scrapped.** He calls it a gimmick.
 
-Consequence that reshapes the options: **option B below is dominated.** A
-backgrounded iOS app gets ~30s and is then suspended with its socket dead, so a
-free-provisioned app rings only while he is already looking at the phone — which
-is when a ring is worthless — and must still fall back to the Discord mention to
-reach him otherwise. That is the fake call this project exists to remove.
+### Why this is better than anything that was proposed to him
 
-This matters beyond cost, and you must be honest with him about it:
+Every option costed for him assumed **the thing that rings is the thing you talk
+through.** Outcome B tried to make one app do both. Outcome C accepted a
+stranger's app to get the ring and inherited its interface. He decoupled them,
+and almost every hard problem of the preceding eight hours dissolves:
 
-> **"Everything over Tailscale" cannot include the ring itself.** A push to wake a
-> sleeping iPhone must traverse Apple's APNs. Everything *after* the ring — audio,
-> control, transcripts, session routing — can and must be direct over Tailscale
-> with no cloud in the path. APNs is the doorbell; Tailscale is the house.
+- The app no longer has to ring, so **CallKit and `reportNewIncomingCall` are
+  irrelevant** — the one thing that was unproven on hardware and had a field
+  report against it.
+- The app no longer has to stay alive, so **all four silent-death paths are
+  gone**: force-quit, reboot, expired certificate, an audio session killed by an
+  ordinary incoming phone call. Those existed only to keep a ringer running.
+- **No push entitlement is needed at all.** Free provisioning was only ever a
+  problem because of push, and an app you open deliberately does not need it.
+- The whole **SIP / Linphone / Belledonne branch is unnecessary** — no
+  self-hosted SIP domain, no push delegation, no dependency on a third party's
+  ungated endpoint.
+- **The audio transport is gone.** No WebRTC, no Opus-versus-G.711, no jitter
+  buffer, and the DERP-relay latency analysis is moot for this design.
 
-Bogdan is being asked the money question in parallel. **Until he answers, build
-everything that does not depend on it** (§4 server side, §5 app shell, §7
-toolchain). Three outcomes to be ready for:
+The weekly re-sign is the one cost that survives, and he took it explicitly.
 
-- **A — paid ADP.** Own app, real CallKit ring via APNs VoIP push, 1-year signing.
-  The best outcome and the one to design toward by default.
-- **B — free provisioning.** Own app, 7-day re-sign, **no ring when closed**. Best
-  achievable: ring when foregrounded/recently backgrounded, fall back to the
-  existing mention push as the wake-up.
-- **C — no Apple account at all.** Self-hosted SIP on archserver over Tailscale +
-  an existing iOS SIP client that carries its own push (Linphone is free). Real
-  ringing, no dev account, but it is not *his* app. Keep this costed as the
-  fallback; do not build it unless he picks it.
+### What is still true and must not be lost
 
-Design so the ring transport is **one swappable module**. A/B/C must not be three
-rewrites.
+> **The ring still cannot be "everything over Tailscale".** Telegram's servers
+> deliver it, exactly as Apple's or Belledonne's would have. That was true at
+> every price and under every option. Everything *after* the ring — the app,
+> transcripts, session routing, agent control — is direct over Tailscale with no
+> cloud in the path.
+
+**A ring must still be confirmed rather than assumed.** `ConfirmedRing` survives
+unchanged in principle: positive evidence that `phone.requestCall` succeeded, or
+report unreachable and fall through to the Discord mention. Failing closed is
+right whatever the doorbell is.
+
+### One thing deliberately NOT done
+
+"Scrap the talking voice rout" plainly means **do not build voice into the iOS
+app**, and that is being obeyed. Whether it also means tear out hotline's
+existing Discord voice pipeline — `voice.py`, `audio.py`, Whisper, Piper, and
+398 passing tests — is a different question with materially different
+consequences. **The conservative reading is in force: stop investing, build
+nothing new on it, delete nothing.** Removing a tested, working subsystem on an
+inference is not reversible, and he is being asked to confirm before anything
+goes.
 
 ## 3. Hard constraints — verified on the box today, do not re-derive
 
@@ -118,21 +136,30 @@ A new service beside `hotlined`, on `archserver`, reachable only over Tailscale.
 - **Outbound too**: Claude must be able to *initiate* the call. That is the entire
   point — "Claude calls me" becoming literal.
 
-## 5. The app
+## 5. The app — a client, not a phone
 
-Native Swift. Minimum viable, then perfect it:
+Native Swift, sideloaded, opened deliberately. It is the interface for
+**delegation and talking to agents**, in his words. Telegram does the ringing;
+this does the work.
 
-- CallKit incoming + outgoing call UI, ringtone, lock-screen answer, Recents.
-- Live two-way audio to archserver over Tailscale.
-- In-call: live transcript, what tool Claude is running right now (hotline already
-  emits `tool_use` events and narrates them aloud — surface them visually too),
-  mute, speaker, hang up.
-- Pick which agent/session you are calling, and see which are live.
-- A text fallback view — the iPhone Shortcut path already works
-  (`/home/bodas/data/hotline/iphone/SHORTCUT.md`); fold it in rather than replace.
-- Push/VoIP registration and token handoff to the server (outcome A).
-- It must survive the app being closed, the phone locked, and the network moving
-  between wifi and cellular.
+What it is for:
+
+- **Pick which agent or session you are talking to, and see which are live.**
+  hotline's registry already has this (`Registry`, `Router.resolve`,
+  `pool.bind`) — reuse it.
+- **Delegate.** Give an agent a task, retask it, start a new one. `hotline
+  --declare`, `new agent <task>` and `resume` already exist as mechanisms.
+- **A live transcript**, and **what tool Claude is running right now** — hotline
+  already emits `tool_use` events, and a screen can show every one of them
+  because it has none of speech's constraints.
+- **Text conversation**, which is the proven transport: the iPhone Shortcut path
+  at `/home/bodas/data/hotline/iphone/SHORTCUT.md` already works end to end.
+  Fold it in rather than replace it.
+- Survive the network moving between wifi and cellular. It is an app you open,
+  so it does not have to survive being closed.
+
+**Explicitly out of scope now:** CallKit and any in-call UI, mute/speaker/hang
+up, PushKit registration and token handoff, and the audio leg entirely.
 
 ## 6. Sideloading
 
