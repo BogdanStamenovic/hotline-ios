@@ -1,0 +1,126 @@
+# Build the Darwin Swift SDK on a macOS runner, where Xcode already exists.
+#
+# Attempt 3. Attempt 1 ran 90 minutes and produced ZERO output; attempt 2 hung in
+# the *install* step, on an xtool invocation that should take milliseconds. Both
+# point at the same cause: xtool prompts for an Apple ID ("Select login mode
+# 0: API Key  1: Password") and blocks on stdin, which was reproduced locally
+# with `xtool new`. Every xtool call here now has stdin closed, so a prompt is an
+# immediate error instead of an indefinite wait.
+#
+# The other two faults from attempt 1, both still fixed here:
+#
+#   1. It called `xtool sdk build /Applications/Xcode.app`. xtool's own help says
+#      `build` takes "Xcode.xip" and `install` takes "Xcode.xip or Xcode.app".
+#      So it was handed the wrong kind of path. This calls `install`.
+#   2. It had no instrumentation, so 90 minutes of silence was indistinguishable
+#      between "extracting a large archive" and "hung". Now a watcher prints
+#      elapsed time, free disk and the size of the output tree every 60s, so a
+#      failure says which one it was.
+#
+# Also pins Xcode 26 explicitly. The runner has everything from 16.0 to 26.3 and
+# `/Applications/Xcode.app` pointed at 16.4; xtool's docs say Xcode 26.
+name: build-darwin-sdk
+
+on:
+  workflow_dispatch:
+    inputs:
+      xcode:
+        description: Which Xcode to build the SDK from
+        default: "/Applications/Xcode_26.3.app"
+
+jobs:
+  sdk:
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - name: What is on this runner
+        run: |
+          set -x
+          xcode-select -p
+          ls -d /Applications/Xcode*.app
+          df -h /
+          sw_vers
+
+      - name: Install xtool (the CLI, not the GUI)
+        run: |
+          set -euxo pipefail
+          curl -fsSL -o xtool.zip \
+            https://github.com/xtool-org/xtool/releases/download/1.17.0/xtool.app.zip
+          unzip -q xtool.zip -d xtool-app
+
+          # THE BUG THAT COST FOUR RUNS. The bundle contains TWO things called
+          # xtool:
+          #
+          #   Contents/MacOS/xtool            34 MB Mach-O, links AppKit+SwiftUI
+          #   Contents/Resources/bin/xtool    705-byte bash wrapper
+          #
+          # `find ... | head -1` picked the first. It is a SwiftUI application:
+          # it reaches App.main() -> NSApplicationMain -> [NSApplication run]
+          # and blocks in __CFRunLoopRun waiting for window-server events that
+          # never come on a headless runner. It does this for `--version`, before
+          # argv is ever examined -- which is why closing stdin changed nothing.
+          #
+          # The wrapper's entire job is `XTL_CLI=1 exec Contents/MacOS/xtool "$@"`.
+          # Use it explicitly, and set XTL_CLI as well so the intent survives even
+          # if the wrapper moves.
+          XTOOL="$PWD/xtool-app/xtool.app/Contents/Resources/bin/xtool"
+          test -x "$XTOOL"
+          echo "XTOOL=$XTOOL" >> "$GITHUB_ENV"
+          echo "XTL_CLI=1" >> "$GITHUB_ENV"
+
+          XTL_CLI=1 "$XTOOL" --version </dev/null
+          XTL_CLI=1 "$XTOOL" sdk install --help </dev/null
+
+      # PLAN A IS ALIVE, and my "it is dead" call was wrong.
+      #
+      # `xtool sdk install` on macOS is a no-op -- that part was real. But
+      # `sdk build` is the cross-compilation subcommand and its help says so:
+      #
+      #   USAGE: xtool sdk build <path> <output-dir> [--arch <arch>]
+      #     <path>    Path to Xcode.xip or Xcode.app
+      #     --arch    The architecture of the LINUX HOST the SDK is being built for
+      #
+      # So it takes an .app, and it builds a bundle for a Linux host, which is
+      # exactly what is wanted. Attempt 1 used `sdk build` and was right to;
+      # what it got wrong was omitting <output-dir>, and the GUI binary hung
+      # before argument parsing so that error was never seen. I then "corrected"
+      # myself onto `install`, which is the one that genuinely does nothing here.
+      - name: Build the Darwin SDK for Linux
+        env:
+          XCODE: ${{ inputs.xcode }}
+        run: |
+          set -uo pipefail
+          mkdir -p out
+          ( "$XTOOL" sdk build "$XCODE" out --arch x86_64 </dev/null >/tmp/b.log 2>&1
+            echo $? >/tmp/b.rc ) &
+          BUILD=$!
+          START=$(date +%s)
+          while kill -0 "$BUILD" 2>/dev/null; do
+            sleep 30
+            echo "--- $(( $(date +%s) - START ))s ---"
+            df -h / | tail -1
+            du -sh out 2>/dev/null || true
+            tail -c 400 /tmp/b.log | tr -d '\r' | tail -3 || true
+          done
+          wait "$BUILD" || true
+          echo "=== rc=$(cat /tmp/b.rc 2>/dev/null) ==="
+          tail -c 3000 /tmp/b.log || true
+          # Assert on the ARTIFACT, not the exit code. A green step that
+          # produced nothing is how `sdk install` fooled the previous run.
+          find out -maxdepth 3 | head -20
+          test -n "$(find out -mindepth 1 -maxdepth 2 | head -1)"
+          du -sh out
+
+      - name: Package the SDK
+        run: |
+          set -euxo pipefail
+          # BSD tar on macOS: no --transform. -s is its equivalent, but nothing
+          # needs renaming here.
+          tar czf darwin-sdk.tar.gz -C out .
+          ls -lh darwin-sdk.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: darwin-sdk
+          path: darwin-sdk.tar.gz
+          retention-days: 5
