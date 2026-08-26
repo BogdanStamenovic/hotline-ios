@@ -136,7 +136,7 @@ extension Shell {
     func killWithCard(_ agent: Agent) {
         guard atomic == nil, busyControl == nil else { return }
         busyControl = "kill"
-        dismissSheet()
+        dismissSheet(drawer: true)
         runAtomic(AtomicRun(flow: .kill, word: "KILLED",
                             sub: "The session is gone. It only comes back through Resume.",
                             kicker: agent.name, agent: agent.name),
@@ -165,7 +165,7 @@ extension Shell {
     func purge(_ agent: Agent, scope: String, beforeSeq: Int?, counts: PurgeCounts) {
         guard atomic == nil, busyControl == nil else { return }
         busyControl = "purge"
-        dismissSheet()
+        dismissSheet(drawer: true)
         runAtomic(AtomicRun(flow: .purge, word: "DELETED",
                             sub: purgeSentence(counts), kicker: agent.name,
                             agent: agent.name),
