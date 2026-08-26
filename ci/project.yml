@@ -63,6 +63,13 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.stamenovic.hotlinecall
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1"
+        # Package.swift's .defaultIsolation(MainActor.self), and it is not
+        # cosmetic: without it the Animatable conformances on PinBar,
+        # RouteTimeline and GlyphRow are nonisolated and reaching into
+        # main-actor state, which is three hard errors. On the app target only
+        # -- XCTestCase's init()/setUp() are nonisolated overrides and cannot
+        # be main-actor isolated.
+        OTHER_SWIFT_FLAGS: "$(inherited) -default-isolation MainActor"
 
   HotlineCallUITests:
     type: bundle.ui-testing
