@@ -71,26 +71,7 @@ jobs:
           set -euo pipefail
           # Whatever iPhone this image actually has, newest first. Hardcoding
           # "iPhone 16" is how this job breaks silently when the image rolls.
-          UDID=$(xcrun simctl list devices available --json | python3 -c '
-import json,sys,re
-d=json.load(sys.stdin)["devices"]
-best=None
-for runtime,devs in d.items():
-    m=re.search(r"iOS-(\d+)-(\d+)",runtime)
-    if not m: continue
-    ver=(int(m.group(1)),int(m.group(2)))
-    if ver<(18,0): continue
-    for dev in devs:
-        if not dev.get("isAvailable"): continue
-        n=dev["name"]
-        if not n.startswith("iPhone"): continue
-        # Prefer a plain numbered iPhone over Pro Max / SE, then newest runtime.
-        rank=(ver, "Pro" not in n and "Max" not in n and "SE" not in n, n)
-        if best is None or rank>best[0]: best=(rank,dev,runtime)
-if best is None: sys.exit("no iOS>=18 iPhone simulator on this image")
-print(best[1]["udid"])
-print(best[1]["name"], best[2], file=sys.stderr)
-')
+          UDID=$(python3 ci/pick_simulator.py)
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
