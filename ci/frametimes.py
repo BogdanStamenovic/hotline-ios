@@ -2,22 +2,46 @@
 """Frame timings out of a simctl recording, with no ffmpeg and no dependencies.
 
 `xcrun simctl io <udid> recordVideo` writes one sample per composited frame, so
-the mp4's own sample table *is* the render timeline: the `stts` atom holds a
-run-length list of per-frame durations in `mdhd` timescale units. Reading it
-back gives the interval between consecutive presented frames, which is the
-thing a "does it drop frames" question is actually asking about.
+the mp4's own sample table holds a run-length list of per-frame durations in
+`mdhd` timescale units (`stts`). Reading it back gives the interval between
+frames that actually reached the screen.
 
-Why this exists at all: the Apple-native answer is XCTOSSignpostMetric's
-hitch metrics, and those only report if the view being scrolled is UIScrollView
+Why this exists at all: the Apple-native answer is XCTOSSignpostMetric's hitch
+metrics, and those only report if the view being scrolled is UIScrollView
 backed and emits the OS signposts. This app drives most of its motion from a
 custom recognizer and hand-rolled layers, so the signposts may never fire. This
 measure has no such precondition -- it counts what reached the screen.
 
-What it cannot tell you: *why* a long interval happened, and it cannot see a
-frame that was composited identically twice. It is a floor on jank, not a
-ceiling.
+WHAT THIS IS NOT: a render timeline. It is a *capture* timeline, and the
+difference is the whole reason this file was rewritten on 2026-08-26.
+
+Two ways the naive reading of it lies, both observed in run 32923724565:
+
+1. A static screen composites no frames, so "nothing moved for 20 seconds"
+   arrives as a single 20-second frame interval. Scored as lateness, one idle
+   gap out-weighed every real stall in the run.
+
+2. The recorder timestamps capture, not vsync, and it quantises to the media
+   timescale. A flawless 60fps stream comes back as intervals alternating a
+   tick either side of 16.67ms. `sum(max(0, d - budget))` rectifies that
+   zero-mean jitter into pure "hitch": feed it a synthetic perfect 60fps
+   stream with +-1 tick of jitter and the old code returned 49 ms/s, five
+   times Apple's user-visible threshold, for an app that never dropped
+   anything. `--self-test` asserts that exact case, so this cannot come back.
+
+So: idle is separated rather than scored, and only intervals past
+`--late-factor` budgets count, which is far outside the jitter band. The
+headline number is dropped frames, because a missed frame cannot be produced
+by timestamp noise.
+
+Still true, and still the honest limit: this cannot tell you *why* a long
+interval happened, it cannot see a frame composited identically twice, and on
+a CI runner the simulator renders in software, so some of what it measures is
+the runner rather than the app. It is a floor on jank, not a ceiling, and it
+cannot by itself attribute jank to your code.
 
 Usage: frametimes.py video.mp4 [--json out.json] [--budget-hz 60]
+                     [--idle-ms 250] [--late-factor 1.5] [--self-test]
 """
 
 from __future__ import annotations
@@ -101,12 +125,110 @@ def durations(data: bytes, stts: tuple[int, int]) -> list[int]:
     return out
 
 
+def analyse(ms: list[float], budget: float, idle_ms: float, late_factor: float) -> dict:
+    """Split intervals into idle / on-time / late, and score only the late ones."""
+    idle = [d for d in ms if d > idle_ms]
+    active = [d for d in ms if d <= idle_ms]
+    if not active:
+        return {"error": "every interval was longer than the idle threshold"}
+
+    late_over = budget * late_factor
+    late = [d for d in active if d > late_over]
+
+    # A missed frame cannot be timestamp noise: at 1.5 budgets the interval is
+    # already seven ticks outside the observed jitter band. Round to the nearest
+    # whole frame the display would have shown.
+    missed = sum(round(d / budget) - 1 for d in late)
+    hitch_ms = sum(d - budget for d in late)
+    active_s = sum(active) / 1000.0
+    drop_pct = missed / (missed + len(active)) * 100.0
+
+    srt = sorted(active)
+
+    def pct(p: float) -> float:
+        return srt[min(len(srt) - 1, int(round(p / 100.0 * (len(srt) - 1))))]
+
+    return {
+        "presented_frames": len(active),
+        "active_s": round(active_s, 3),
+        "median_ms": round(pct(50), 2),
+        "effective_fps": round(len(active) / active_s, 2) if active_s else 0,
+        "frame_ms": {
+            "p50": round(pct(50), 2),
+            "p90": round(pct(90), 2),
+            "p99": round(pct(99), 2),
+            "max": round(max(active), 2),
+        },
+        "late_intervals": len(late),
+        "dropped_frames": missed,
+        "dropped_frame_pct": round(drop_pct, 2),
+        "hitch_time_ms": round(hitch_ms, 2),
+        "hitch_ratio_ms_per_s": round(hitch_ms / active_s, 2) if active_s else 0,
+        "idle_gaps": {
+            "count": len(idle),
+            "total_s": round(sum(idle) / 1000.0, 2),
+            "longest_s": round(max(idle) / 1000.0, 2) if idle else 0,
+        },
+        # Scored on dropped frames, not on hitch time: hitch time still carries
+        # some jitter, the drop count carries none.
+        "verdict": (
+            "good" if drop_pct < 1 else "marginal" if drop_pct < 5 else "hitchy"
+        ),
+    }
+
+
+def self_test(budget: float, late_factor: float) -> int:
+    """A perfect 60fps stream with the recorder's own jitter must score clean."""
+    import itertools
+
+    tick = 1000.0 / 600.0
+    jittered = list(
+        itertools.islice(itertools.cycle([budget - tick, budget + tick]), 6000)
+    )
+    r = analyse(jittered, budget, 250.0, late_factor)
+    ok = r["dropped_frames"] == 0 and r["verdict"] == "good"
+    mean = sum(jittered) / len(jittered)
+    print(f"self-test: synthetic {1000 / mean:.1f} fps, +-1 tick of capture jitter")
+    print(f"  dropped_frames={r['dropped_frames']}  verdict={r['verdict']}")
+    print(f"  {'PASS' if ok else 'FAIL -- jitter is being scored as hitch again'}")
+
+    # And a stream that genuinely drops every other frame must NOT score clean.
+    dropping = [budget * 2] * 3000
+    r2 = analyse(dropping, budget, 250.0, late_factor)
+    ok2 = r2["dropped_frames"] == 3000 and r2["verdict"] == "hitchy"
+    print("self-test: synthetic 30fps against a 60fps budget")
+    print(f"  dropped_frames={r2['dropped_frames']}  verdict={r2['verdict']}")
+    print(f"  {'PASS' if ok2 else 'FAIL -- real drops are not being caught'}")
+    return 0 if (ok and ok2) else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("video")
+    ap.add_argument("video", nargs="?")
     ap.add_argument("--json", dest="json_out")
     ap.add_argument("--budget-hz", type=float, default=60.0)
+    ap.add_argument(
+        "--idle-ms",
+        type=float,
+        default=250.0,
+        help="intervals longer than this are the screen sitting still, not a "
+        "dropped frame; reported separately rather than scored",
+    )
+    ap.add_argument(
+        "--late-factor",
+        type=float,
+        default=1.5,
+        help="an interval counts as late past this many budgets; the default "
+        "sits far outside the recorder's timestamp jitter",
+    )
+    ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
+
+    budget = 1000.0 / args.budget_hz
+    if args.self_test:
+        return self_test(budget, args.late_factor)
+    if not args.video:
+        ap.error("a video is required unless --self-test is given")
 
     data = Path(args.video).read_bytes()
     timescale, stts = find_video_track(data)
@@ -116,62 +238,34 @@ def main() -> int:
         return 2
 
     ms = [t * 1000.0 / timescale for t in ticks]
-    total_ms = sum(ms)
-    budget = 1000.0 / args.budget_hz
-
-    # Apple's own definition: a hitch is a frame that arrives later than it
-    # should have, and hitch *time* is the excess, not the count. Anything at or
-    # under one refresh interval is on time by construction.
-    hitch_ms = sum(max(0.0, d - budget) for d in ms)
-    ratio = (hitch_ms / total_ms * 1000.0) if total_ms else 0.0  # ms hitch / s
-
-    srt = sorted(ms)
-
-    def pct(p: float) -> float:
-        return srt[min(len(srt) - 1, int(round(p / 100.0 * (len(srt) - 1))))]
-
-    over2 = sum(1 for d in ms if d > budget * 2)
-    over4 = sum(1 for d in ms if d > budget * 4)
-    worst = max(ms)
-
     report = {
         "frames": len(ms),
-        "duration_s": round(total_ms / 1000.0, 3),
+        "duration_s": round(sum(ms) / 1000.0, 3),
         "timescale": timescale,
-        "effective_fps": round(len(ms) / (total_ms / 1000.0), 2) if total_ms else 0,
         "budget_ms": round(budget, 3),
-        "frame_ms": {
-            "p50": round(pct(50), 2),
-            "p90": round(pct(90), 2),
-            "p99": round(pct(99), 2),
-            "max": round(worst, 2),
-        },
-        "late_frames": {
-            "over_1_budget": sum(1 for d in ms if d > budget * 1.5),
-            "over_2_budgets": over2,
-            "over_4_budgets": over4,
-        },
-        "hitch_time_ms": round(hitch_ms, 2),
-        "hitch_ratio_ms_per_s": round(ratio, 2),
-        # Apple's shipping guidance for scroll: under 5 ms hitch per second is
-        # good, over 10 ms/s is a user-visible problem.
-        "verdict": (
-            "good" if ratio < 5 else "marginal" if ratio < 10 else "hitchy"
-        ),
+        "idle_ms": args.idle_ms,
+        **analyse(ms, budget, args.idle_ms, args.late_factor),
+        "caveats": [
+            "idle gaps are excluded from the score and reported separately",
+            "a CI runner renders the simulator in software, so some of this "
+            "is the runner and not the app",
+            "a floor on jank, not a ceiling: it cannot say why a frame was late",
+        ],
     }
 
     print(json.dumps(report, indent=2))
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(report, indent=2))
 
-    print("\nframe-interval histogram (ms):", file=sys.stderr)
+    active = [d for d in ms if d <= args.idle_ms]
+    print("\nframe-interval histogram, active only (ms):", file=sys.stderr)
     buckets = [(0, 8), (8, 17), (17, 25), (25, 34), (34, 50), (50, 100), (100, 1e9)]
     for lo, hi in buckets:
-        n = sum(1 for d in ms if lo <= d < hi)
+        n = sum(1 for d in active if lo <= d < hi)
         if not n:
             continue
         label = f"{lo:>4.0f}-{hi:<5.0f}" if hi < 1e9 else f"{lo:>4.0f}+     "
-        bar = "#" * min(60, max(1, round(n / len(ms) * 60)))
+        bar = "#" * min(60, max(1, round(n / len(active) * 60)))
         print(f"  {label} {n:>6}  {bar}", file=sys.stderr)
     return 0
 
