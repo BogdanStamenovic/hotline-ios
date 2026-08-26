@@ -50,7 +50,14 @@ fi
 # keeps getting caught by.
 rm -f "$out"
 
-source /mnt/iosbuild/env62.sh
+# The Swift 6.2 toolchain on archserver lives outside the default paths. On a
+# macOS runner the Xcode toolchain is already the one on PATH, and that file
+# does not exist -- so this is conditional rather than unconditional, and the
+# same script is the check in both places.
+if [[ -f /mnt/iosbuild/env62.sh ]]; then
+    source /mnt/iosbuild/env62.sh
+fi
+
 swiftc -swift-version 6 \
     "$here/main.swift" \
     "$sources/Wire/Wire.swift" \

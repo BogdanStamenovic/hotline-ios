@@ -1,0 +1,93 @@
+# The Xcode project that only CI uses.
+#
+# SwiftPM cannot emit an iOS .app -- `Package.swift` declares a *library*, and
+# the device build goes through xtool, which wraps that library in a bundle of
+# its own. A simulator run needs a real .app and a real UI-test bundle, so this
+# spec rebuilds the same sources as an application target. It is generated on
+# the runner (`xcodegen generate`) and never checked in, so there is no second
+# copy of the build graph to keep in sync: the sources list points straight at
+# `app/HotlineCall/Sources/HotlineCall`.
+#
+# Two settings are load-bearing and mirror Package.swift exactly:
+#   * -default-isolation MainActor  == swiftSettings: [.defaultIsolation(MainActor.self)]
+#   * SWIFT_VERSION 6.0             == swift-tools-version 6.2 language mode
+# If they drift, the app compiles here and not there, and CI stops meaning
+# anything.
+
+name: HotlineCall
+
+options:
+  bundleIdPrefix: dev.stamenovic
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  groupSortPosition: none
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    # Package.swift's .defaultIsolation(MainActor.self). Every type in the
+    # module is UI state; without this the whole module fails to typecheck.
+    OTHER_SWIFT_FLAGS: "$(inherited) -default-isolation MainActor"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGN_IDENTITY: ""
+
+targets:
+  HotlineCall:
+    type: application
+    platform: iOS
+    # `-` on the folder pulls in every .swift under it, and the four .ttf files
+    # land flat at the top of the .app -- which is the fallback branch
+    # Theme/Fonts.swift already has (`Bundle(url:) ?? Bundle.main`).
+    sources:
+      - path: ../app/HotlineCall/Sources/HotlineCall
+        excludes:
+          - "Resources/**"
+      - path: ../app/HotlineCall/Sources/HotlineCall/Resources/Fonts
+        buildPhase: resources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Hotline
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIUserInterfaceStyle: Dark
+        # CI only. The stub daemon is plain HTTP on 127.0.0.1; the shipped app
+        # talks to a tailnet address and never sees this plist.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: Talks to the stub daemon during CI.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.stamenovic.hotlinecall
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"
+
+  HotlineCallUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: HotlineCall
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.stamenovic.hotlinecall.uitests
+        TEST_TARGET_NAME: HotlineCall
+
+schemes:
+  HotlineCall:
+    build:
+      targets:
+        HotlineCall: all
+        HotlineCallUITests: [test]
+    test:
+      targets:
+        - HotlineCallUITests
+      gatherCoverageData: false
+    run:
+      config: Debug

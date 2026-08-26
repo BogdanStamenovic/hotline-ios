@@ -1,0 +1,271 @@
+# The verification loop this project did not have.
+#
+# The app was written on Linux and never executed. It compiles, and 206
+# Foundation-only wire checks pass, and neither of those can tell you whether a
+# fling decelerates like a fling. This boots a simulator, drives the app through
+# every piece of motion it has, records the screen, and measures the interval
+# between the frames that actually reached it.
+#
+# Free tier only: `macos-latest` on a public repository is unmetered. Nothing
+# here needs a paid runner, a signing identity, or an Apple ID.
+
+name: simulator
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: simulator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The Foundation-only checks, kept green. They run on macOS here rather than
+  # Linux, which also proves the decode contract is not Linux-Foundation-shaped.
+  wiretest:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+      - name: Wire checks
+        run: bash app/wiretest/run.sh
+
+  drive:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          set -x
+          xcodebuild -version
+          swift --version
+          xcrun simctl list runtimes
+
+      - name: Install XcodeGen
+        run: |
+          set -euo pipefail
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen --version
+
+      # SwiftPM cannot emit an iOS .app -- Package.swift declares a library and
+      # the device build wraps it with xtool. ci/project.yml rebuilds the same
+      # sources as an application plus a UI-test bundle. It points at
+      # app/HotlineCall/Sources/HotlineCall directly, so there is no second copy
+      # of the source list to drift.
+      - name: Generate the Xcode project
+        run: |
+          set -euxo pipefail
+          cd ci
+          xcodegen generate --spec project.yml
+          xcodebuild -list -project HotlineCall.xcodeproj
+
+      - name: Pick a simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          # Whatever iPhone this image actually has, newest first. Hardcoding
+          # "iPhone 16" is how this job breaks silently when the image rolls.
+          UDID=$(xcrun simctl list devices available --json | python3 -c '
+import json,sys,re
+d=json.load(sys.stdin)["devices"]
+best=None
+for runtime,devs in d.items():
+    m=re.search(r"iOS-(\d+)-(\d+)",runtime)
+    if not m: continue
+    ver=(int(m.group(1)),int(m.group(2)))
+    if ver<(18,0): continue
+    for dev in devs:
+        if not dev.get("isAvailable"): continue
+        n=dev["name"]
+        if not n.startswith("iPhone"): continue
+        # Prefer a plain numbered iPhone over Pro Max / SE, then newest runtime.
+        rank=(ver, "Pro" not in n and "Max" not in n and "SE" not in n, n)
+        if best is None or rank>best[0]: best=(rank,dev,runtime)
+if best is None: sys.exit("no iOS>=18 iPhone simulator on this image")
+print(best[1]["udid"])
+print(best[1]["name"], best[2], file=sys.stderr)
+')
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl list devices | grep "$UDID"
+
+      - name: Start the stub daemon
+        run: |
+          set -euo pipefail
+          nohup python3 ci/stub/daemon.py 8789 > stub.log 2>&1 &
+          echo $! > stub.pid
+          for i in $(seq 1 30); do
+            if curl -sf --max-time 2 http://127.0.0.1:8789/health >/dev/null; then
+              echo "stub is up"; break
+            fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8789/health | head -c 400; echo
+          # The simulator shares the host's network stack, so 127.0.0.1 inside
+          # the simulator is this loopback. Prove it rather than assume it.
+          xcrun simctl spawn "${{ steps.sim.outputs.udid }}" \
+            /usr/bin/curl -sf --max-time 5 http://127.0.0.1:8789/health >/dev/null \
+            && echo "reachable from inside the simulator" \
+            || echo "WARNING: simctl spawn curl could not reach the stub (the app may still)"
+
+      # Split from the test run so the recorder is not filming a compile.
+      - name: Build for testing
+        run: |
+          set -euxo pipefail
+          cd ci
+          xcodebuild build-for-testing \
+            -project HotlineCall.xcodeproj \
+            -scheme HotlineCall \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath ../DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee ../build.log | grep -E "error:|warning:|BUILD|Compiling|Linking" || true
+          # tee swallows xcodebuild's status; check it explicitly.
+          grep -q "BUILD SUCCEEDED" ../build.log
+
+      - name: Drive it, and film it
+        id: drive
+        run: |
+          set -uo pipefail
+          UDID="${{ steps.sim.outputs.udid }}"
+          mkdir -p out
+
+          xcrun simctl io "$UDID" recordVideo --codec h264 --force out/drive.mp4 &
+          REC=$!
+          echo "recorder pid $REC"
+          sleep 2
+
+          set -o pipefail
+          cd ci
+          xcodebuild test-without-building \
+            -project HotlineCall.xcodeproj \
+            -scheme HotlineCall \
+            -destination "id=$UDID" \
+            -derivedDataPath ../DerivedData \
+            -resultBundlePath ../out/drive.xcresult \
+            -only-testing:HotlineCallUITests/DriveTests/testLaunches \
+            -only-testing:HotlineCallUITests/DriveTests/testDrive \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee ../out/test.log
+          STATUS=${PIPESTATUS[0]}
+          cd ..
+
+          # SIGINT is what finalises the mp4 -- SIGKILL leaves an unplayable file.
+          kill -INT "$REC" 2>/dev/null || true
+          for i in $(seq 1 20); do kill -0 "$REC" 2>/dev/null || break; sleep 1; done
+          kill -9 "$REC" 2>/dev/null || true
+          sleep 1
+          ls -la out/
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "--- the drive's own markers ---"
+          grep -E "^MARK " out/test.log || echo "(no MARK lines -- the drive never started)"
+          exit "$STATUS"
+
+      # Attempted separately and never allowed to fail the job: the app's list
+      # is not UIScrollView-backed, so the OS scroll signposts these metrics key
+      # off may never fire. Whether they do is a finding either way.
+      - name: Apple's own metrics (best effort)
+        if: always()
+        continue-on-error: true
+        run: |
+          set -uxo pipefail
+          UDID="${{ steps.sim.outputs.udid }}"
+          cd ci
+          xcodebuild test-without-building \
+            -project HotlineCall.xcodeproj \
+            -scheme HotlineCall \
+            -destination "id=$UDID" \
+            -derivedDataPath ../DerivedData \
+            -resultBundlePath ../out/metrics.xcresult \
+            -only-testing:HotlineCallUITests/DriveTests/testLaunchMetric \
+            -only-testing:HotlineCallUITests/DriveTests/testScrollHitchMetric \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee ../out/metrics.log
+          cd ..
+          echo "--- measured values ---"
+          grep -E "measured|Time|hitch|average" out/metrics.log | head -60 || true
+
+      - name: Frame timings from the recording
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ ! -s out/drive.mp4 ]; then
+            echo "no video was produced -- nothing to measure"
+            exit 0
+          fi
+          python3 ci/frametimes.py out/drive.mp4 --json out/frametimes.json | tee out/frametimes.txt
+          {
+            echo "## Frame timings"
+            echo
+            echo "Measured from the simulator recording's own sample table -- the"
+            echo "interval between frames that actually reached the screen."
+            echo
+            echo '```json'
+            cat out/frametimes.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: What the run saw
+        if: always()
+        run: |
+          {
+            echo "## The drive"
+            echo
+            echo '```'
+            grep -E "^MARK " out/test.log 2>/dev/null || echo "(none)"
+            echo '```'
+            echo
+            echo "## Stub daemon"
+            echo '```'
+            head -20 stub.log 2>/dev/null || echo "(none)"
+            echo "..."
+            grep -c "POST" stub.log 2>/dev/null | sed 's/^/POST requests served: /' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          kill "$(cat stub.pid)" 2>/dev/null || true
+
+      - name: Screenshot the final state
+        if: always()
+        run: |
+          xcrun simctl io "${{ steps.sim.outputs.udid }}" screenshot out/final.png || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drive-video
+          path: |
+            out/drive.mp4
+            out/final.png
+            out/frametimes.json
+            out/frametimes.txt
+          retention-days: 30
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drive-logs
+          path: |
+            out/test.log
+            out/metrics.log
+            build.log
+            stub.log
+          retention-days: 30
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drive-xcresult
+          path: |
+            out/drive.xcresult
+            out/metrics.xcresult
+          retention-days: 14
+          if-no-files-found: warn
