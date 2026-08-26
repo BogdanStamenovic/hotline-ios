@@ -189,6 +189,47 @@ jobs:
           echo "--- measured values ---"
           grep -E "measured|Time|hitch|average" out/metrics.log | head -60 || true
 
+      # The drive's number means nothing on its own. This films Apple's own
+      # Settings app through the same recorder, on the same runner, with the
+      # same gestures, so "19% of frames dropped" can be read as either the app
+      # or the machine instead of being assumed to be the app.
+      - name: Film the control, so the drive has a baseline
+        if: always()
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          UDID="${{ steps.sim.outputs.udid }}"
+          mkdir -p out
+
+          xcrun simctl io "$UDID" recordVideo --codec h264 --force out/control.mp4 &
+          REC=$!
+          sleep 2
+
+          cd ci
+          xcodebuild test-without-building \
+            -project HotlineCall.xcodeproj \
+            -scheme HotlineCall \
+            -destination "id=$UDID" \
+            -derivedDataPath ../DerivedData \
+            -resultBundlePath ../out/control.xcresult \
+            -only-testing:HotlineCallUITests/DriveTests/testRunnerFloor \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee ../out/control.log
+          cd ..
+
+          # SIGINT is what finalises the mp4; SIGKILL leaves it unplayable.
+          kill -INT "$REC" 2>/dev/null || true
+          for i in $(seq 1 20); do kill -0 "$REC" 2>/dev/null || break; sleep 1; done
+          kill -9 "$REC" 2>/dev/null || true
+          sleep 1
+
+          if [ -s out/control.mp4 ]; then
+            echo "CONTROL RECORDING $(stat -f%z out/control.mp4) bytes"
+          else
+            echo "CONTROL RECORDING NONE -- no baseline this run"
+          fi
+          grep -E "^MARK " out/control.log || echo "(no MARK lines -- the control never ran)"
+
       - name: Frame timings from the recording
         if: always()
         run: |
@@ -197,17 +238,55 @@ jobs:
             echo "no video was produced -- nothing to measure"
             exit 0
           fi
+          # Guards the metric itself: a flawless 60fps stream carrying the
+          # recorder's own timestamp jitter must score clean, and a real 30fps
+          # stream must not. Both directions, because the bug this replaced
+          # only failed in one of them.
+          python3 ci/frametimes.py --self-test
+
           python3 ci/frametimes.py out/drive.mp4 --json out/frametimes.json | tee out/frametimes.txt
+
+          if [ -s out/control.mp4 ]; then
+            python3 ci/frametimes.py out/control.mp4 --json out/control-frametimes.json \
+              | tee out/control-frametimes.txt
+          fi
+
           {
             echo "## Frame timings"
             echo
             echo "Measured from the simulator recording's own sample table -- the"
             echo "interval between frames that actually reached the screen."
+            echo "Idle gaps are reported separately rather than scored, and only"
+            echo "intervals past 1.5 budgets count, so capture jitter cannot"
+            echo "masquerade as a dropped frame."
             echo
+            echo "### The app"
             echo '```json'
             cat out/frametimes.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s out/control-frametimes.json ]; then
+            APP=$(python3 -c "import json;print(json.load(open('out/frametimes.json'))['dropped_frame_pct'])")
+            CTL=$(python3 -c "import json;print(json.load(open('out/control-frametimes.json'))['dropped_frame_pct'])")
+            {
+              echo "### The control (Apple's Settings, same runner, same gestures)"
+              echo '```json'
+              cat out/control-frametimes.json
+              echo '```'
+              echo
+              echo "**App ${APP}% dropped vs control ${CTL}% dropped.**"
+              echo
+              echo "If those are close, the rate is this runner's software"
+              echo "rasteriser and not the app, and chasing it in the app's"
+              echo "views is wasted effort. If the control is clean and the app"
+              echo "is not, the app owns its jank."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "--- app ${APP}% dropped vs control ${CTL}% dropped ---"
+          else
+            echo "no control recording -- the app's number has no baseline this run" \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: What the run saw
         if: always()
@@ -246,9 +325,12 @@ jobs:
           name: drive-video
           path: |
             out/drive.mp4
+            out/control.mp4
             out/final.png
             out/frametimes.json
             out/frametimes.txt
+            out/control-frametimes.json
+            out/control-frametimes.txt
           retention-days: 30
           if-no-files-found: warn
 

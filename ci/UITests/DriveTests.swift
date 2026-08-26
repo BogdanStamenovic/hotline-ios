@@ -337,6 +337,68 @@ final class DriveTests: XCTestCase {
         attachShot("final-shot")
     }
 
+    // MARK: - The control
+
+    /// Drives Apple's own Settings app, on the same simulator, through the same
+    /// recorder and the same gesture primitives as `testDrive`.
+    ///
+    /// This exists because the drive's frame timings had nothing to be compared
+    /// against, and a number with no baseline gets read as an app defect by
+    /// default. Corrected for idle and for capture jitter, run 32923724565 came
+    /// back at 19% dropped frames spread evenly at 11-20% across every
+    /// sustained span, with no gesture standing out -- a flatness that looks
+    /// much more like a floor than like anything in this app's code. But
+    /// "looks like" is not a measurement, and a CI runner renders the simulator
+    /// in software with no GPU to speak of.
+    ///
+    /// Settings is Apple's code, it is genuinely `UIScrollView`-backed, and it
+    /// is smooth on real hardware. So it isolates the one variable that matters:
+    /// if the control drops frames at the app's rate, the rate belongs to the
+    /// runner and chasing it in this app's views is wasted effort. If the
+    /// control is clean and the app is not, the app owns its jank and the
+    /// `ThreadView.staged` and `animatableData` suspects are worth the profiler.
+    ///
+    /// Deliberately not asserting a threshold. This reports; it does not judge,
+    /// because what counts as the floor is exactly what is unknown here.
+    func testRunnerFloor() throws {
+        let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
+        settings.launch()
+        guard settings.wait(for: .runningForeground, timeout: 30) else {
+            mark("control: Settings never came to the foreground -- no baseline this run")
+            return
+        }
+        started = Date()
+        settle(2.0)
+
+        func at(_ x: Double, _ y: Double) -> XCUICoordinate {
+            settings.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y))
+        }
+
+        mark("=== control begins ===")
+
+        // The same two gesture shapes the drive leans on, at the same numbers:
+        // a slow tracking drag, then a fast one left to decelerate on its own.
+        mark("control: six slow drags")
+        for _ in 0..<6 {
+            at(0.5, 0.78).press(forDuration: 0.08,
+                                thenDragTo: at(0.5, 0.34),
+                                withVelocity: .slow,
+                                thenHoldForDuration: 0.05)
+            settle(0.45)
+        }
+
+        mark("control: four flings, each left to decelerate")
+        for _ in 0..<4 {
+            at(0.5, 0.82).press(forDuration: 0.01,
+                                thenDragTo: at(0.5, 0.18),
+                                withVelocity: .fast,
+                                thenHoldForDuration: 0.0)
+            settle(1.4)
+        }
+
+        mark("=== control ends ===")
+    }
+
     // MARK: - Metrics
 
     /// The Apple-native measure, attempted honestly.
