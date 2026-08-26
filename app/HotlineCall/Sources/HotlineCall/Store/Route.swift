@@ -103,10 +103,16 @@ nonisolated struct Route: Sendable, Equatable {
 
 /// Rebuild the route from one channel's events.
 ///
-/// `declared` is `HistoryPage.phases` when a daemon sends it: those records win
-/// on title, outcome and times, because they are the store's own row rather
-/// than a reconstruction. The nesting still comes from the events either way,
-/// since a phase record does not carry its tool calls.
+/// `declared` is `HistoryPage.phases` when a daemon sends it. It **seeds** the
+/// legs and an event for the same id then overwrites what it touches, which is
+/// deliberate and is the opposite of what a first reading suggests: the phase
+/// record is written *from* the same transcript slice as the events, so where
+/// both exist they agree, and where they disagree the event is the row the
+/// store's record was derived from. What a record buys is the legs whose own
+/// `phase` and `outcome` events have rolled off the loaded page -- it supplies
+/// a title and an end for those instead of leaving them inferred. The nesting
+/// comes from the events either way, because a phase record carries no tool
+/// calls.
 nonisolated func route(from moments: [Moment], declared: [Phase] = []) -> Route {
     struct Leg {
         var title: String?

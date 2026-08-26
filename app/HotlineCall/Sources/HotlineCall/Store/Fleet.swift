@@ -83,6 +83,22 @@ final class Fleet {
     var reduceMotion = false
 
     private var blockedFlags: [AgentID: Bool] = [:]
+    /// The blocked state the **display** has caught up to, which is not the same
+    /// thing as the roster's.
+    ///
+    /// An agent that blocked in the same roster snapshot as another one waits
+    /// its turn in `owed`, and until its own t = 320 beat runs it must stay
+    /// where it is. Partitioning `order` on the roster's flag would place it at
+    /// its final position during the *first* agent's episode, so when its own
+    /// beat arrived there would be no delta left to animate and it would have
+    /// silently teleported -- which is exactly the overtake this whole sequence
+    /// exists to show.
+    private var settled: [AgentID: Bool] = [:]
+    /// Supersedes the two side tasks an episode spawns. They outlive `perform`
+    /// by up to 520 ms, and the next queued arrival starts the instant `perform`
+    /// returns -- so without this the first episode's cleanup writes land in the
+    /// middle of the second one's timeline. Deterministically, not rarely.
+    private var episode = 0
     private var owed: [Arrival] = []
     private var choreography: Task<Void, Never>?
     private var arrivalsHeld = false
@@ -274,8 +290,19 @@ final class Fleet {
     /// preserved, so a roster that has not changed cannot reshuffle.
     private func reorder() {
         orderHeld = false
-        order = agents.filter(\.isBlocked).map(\.name)
-            + agents.filter { !$0.isBlocked }.map(\.name)
+        order = agents.filter { shown($0) }.map(\.name)
+            + agents.filter { !shown($0) }.map(\.name)
+    }
+
+    /// Where the list currently believes this agent belongs. Falls back to the
+    /// roster for every agent that has never had an episode, which is all of
+    /// them at launch.
+    func shown(_ agent: Agent) -> Bool {
+        settled[agent.name] ?? agent.isBlocked
+    }
+
+    func shown(_ id: AgentID) -> Bool {
+        settled[id] ?? (byID[id]?.isBlocked ?? false)
     }
 
     // MARK: - The arrival choreography (APP-PLAN 4.6)
@@ -308,6 +335,7 @@ final class Fleet {
         }
         let alive = Set(roster.map(\.name))
         blockedFlags = blockedFlags.filter { alive.contains($0.key) }
+        settled = settled.filter { alive.contains($0.key) }
         guard !found.isEmpty else { return }
         owed += found
         orderHeld = true
@@ -339,6 +367,8 @@ final class Fleet {
         let name = arrival.agent
         let out = arrival.unblocking
         let mo = reduceMotion ? 0.38 : 1.0
+        episode &+= 1
+        let mine = episode
 
         var news = arrival
         if !out {
@@ -354,9 +384,10 @@ final class Fleet {
         withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.51 * mo)) { sweep = 1 }
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(Int(510 * mo)))
-            guard let self else { return }
+            guard let self, episode == mine else { return }
             withAnimation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.99 * mo)) { sweep = 2 }
             try? await Task.sleep(for: .milliseconds(Int(990 * mo)))
+            guard episode == mine else { return }
             sweep = 0
         }
 
@@ -374,13 +405,16 @@ final class Fleet {
         beats[name, default: ArrivalBeats()].lifted = true
         withAnimation(.enter) { beats[name, default: ArrivalBeats()].lift = 1 }
         mover = name
+        // This agent, and only this agent, moves now.
+        settled[name] = !out
         reorder()
 
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(Int(500 * mo)))
-            guard let self else { return }
+            guard let self, episode == mine else { return }
             withAnimation(.settle) { beats[name, default: ArrivalBeats()].lift = 0 }
             try? await Task.sleep(for: .milliseconds(Int(360 * mo)))
+            guard episode == mine else { return }
             beats[name]?.lifted = false
             if mover == name { mover = nil }
             if beats[name]?.isQuiet == true { beats[name] = nil }

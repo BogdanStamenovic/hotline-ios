@@ -16,6 +16,10 @@ struct FleetRow: View {
     /// because it already was when the app launched -- gets the settled state
     /// with no sequence, which is why this is a value rather than a flag.
     let beats: ArrivalBeats
+    /// The blocked state the *list* has caught up to. It is not `agent.isBlocked`
+    /// while an agent is queued behind another one's episode: the roster already
+    /// knows, and the row is deliberately still saying the old thing.
+    let settled: Bool
     /// What it is waiting to be told, when the daemon holds an open
     /// conversation for it. Absent is normal and renders the task instead.
     let question: String?
@@ -64,7 +68,7 @@ struct FleetRow: View {
                 LinearGradient(colors: [Theme.sig10, .clear],
                                startPoint: .leading, endPoint: .trailing)
                     .mask(SideWipe(progress: wash))
-                PinBar(reveal: wash, breathing: agent.isBlocked)
+                PinBar(reveal: wash, breathing: settled)
             }
 
             HStack(alignment: .top, spacing: 14) {
@@ -156,11 +160,11 @@ struct FleetRow: View {
     /// settled state otherwise -- an agent that was already blocked at launch
     /// never had a beat and must still look blocked.
     private var wash: Double {
-        beats.isQuiet ? (agent.isBlocked ? 1 : 0) : beats.wash
+        beats.isQuiet ? (settled ? 1 : 0) : beats.wash
     }
 
     private var tag: Double {
-        beats.isQuiet ? (agent.isBlocked ? 1 : 0) : beats.words
+        beats.isQuiet ? (settled ? 1 : 0) : beats.words
     }
 
     private var spokenLabel: String {

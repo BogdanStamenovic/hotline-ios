@@ -44,6 +44,11 @@ final class Channel {
     /// in a view: the reconstruction walks every event, and a `body` that did it
     /// per evaluation would walk 200 rows on every keystroke in the composer.
     private(set) var route = Route()
+    /// The recorder's waveform, on the same rule and for a sharper version of
+    /// the same reason. `rebuiltSamples` filters the accumulated tool times per
+    /// assistant event, so it is O(n·k) rather than a flat walk -- and
+    /// `MapLayer.body` re-evaluates on **every frame of a scrub**.
+    private(set) var wave: [Sample] = []
     private(set) var samples = SampleRing()
     private(set) var loading: Loading = .cold
     private(set) var hasOlder = false
@@ -170,7 +175,7 @@ final class Channel {
         cursor = snapshot.moments.last?.seq ?? 0
         oldest = snapshot.moments.first?.seq
         samples.seed(rebuiltSamples(from: snapshot.moments))
-        route = HotlineCall.route(from: moments, declared: phases)
+        rebuildDerived()
     }
 
     /// Step 2: the authoritative window. **Replaces rather than merges**, so a
@@ -208,7 +213,7 @@ final class Channel {
         generation = page.historyGeneration ?? generation
         if let list = page.phases { phases = list }
         samples.seed(rebuiltSamples(from: events))
-        route = HotlineCall.route(from: moments, declared: phases)
+        rebuildDerived()
         reconcile(events)
         Task { [cache, name, moments, generation] in
             await cache.replace(name, with: moments, generation: generation)
@@ -266,7 +271,7 @@ final class Channel {
         }
         // The route is rebuilt from what is *visible*, so a parked page does
         // not move the map behind an atomic presentation either.
-        route = HotlineCall.route(from: moments, declared: phases)
+        rebuildDerived()
         if oldest == nil { oldest = arrivals.first?.seq }
     }
 
@@ -289,7 +294,7 @@ final class Channel {
             samples.seed(rebuiltSamples(from: events))
             // Paging older history extends the waveform leftward and can fill
             // in the title of a leg the first page began inside.
-            route = HotlineCall.route(from: moments, declared: phases)
+            rebuildDerived()
         } catch {
             log.error("older \(self.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
@@ -422,6 +427,18 @@ final class Channel {
         guard !holdback.isEmpty else { return }
         moments += holdback
         holdback.removeAll()
+        // The parked page has landed, so the map has to see it too. Leaving it
+        // out meant the route and the waveform stayed at their pre-card state
+        // until the next feed page happened to arrive -- up to 25 s, or never
+        // if the agent went quiet after answering.
+        rebuildDerived()
+    }
+
+    /// Everything computed from `moments`, in one place, so a new writer cannot
+    /// update the thread and forget the map.
+    private func rebuildDerived() {
+        route = HotlineCall.route(from: moments, declared: phases)
+        wave = rebuiltSamples(from: moments)
     }
 
     // MARK: - Invalidation
@@ -434,6 +451,7 @@ final class Channel {
         holdback.removeAll()
         phases.removeAll()
         route = Route()
+        wave = []
         samples = SampleRing()
         cursor = 0
         oldest = nil

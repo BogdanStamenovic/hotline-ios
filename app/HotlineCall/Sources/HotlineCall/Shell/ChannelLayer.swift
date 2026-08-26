@@ -38,6 +38,9 @@ struct ChannelLayer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// 1 settled. Driven to 0 and back on every `cut`.
     @State private var arrival: Double = 1
+    /// Held so a second cut supersedes the first rather than racing it to write
+    /// `arrival`, and so a torn-down layer does not leave one running.
+    @State private var cutTask: Task<Void, Never>?
 
     var body: some View {
         GeometryReader { geo in
@@ -86,6 +89,7 @@ struct ChannelLayer: View {
             .offset(y: (1 - arrival) * 20 * mo)
         }
         .onChange(of: cut) { _, _ in selfCut() }
+        .onDisappear { cutTask?.cancel() }
         // The whole seam: paint from cache, drop it if the generation moved,
         // replace the visible window from history, then stream. One task,
         // because the steps must happen in order.
@@ -99,9 +103,11 @@ struct ChannelLayer: View {
     /// stagger the thread against the same number.
     private func selfCut() {
         let quiet = reduceMotion
+        cutTask?.cancel()
         withAnimation(.easeOut(duration: quiet ? 0.20 : 0.26)) { arrival = 0 }
-        Task {
+        cutTask = Task {
             try? await Task.sleep(for: .milliseconds(quiet ? 200 : 260))
+            guard !Task.isCancelled else { return }
             withAnimation(quiet ? .easeOut(duration: 0.16)
                                 : .timingCurve(0.16, 1, 0.3, 1, duration: 0.42)) {
                 arrival = 1

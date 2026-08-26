@@ -128,6 +128,7 @@ struct FleetLayer: View {
                             isHero: hero == id,
                             swipeX: swiped == id ? swipeX : 0,
                             beats: fleet.beats[id] ?? ArrivalBeats(),
+                            settled: fleet.shown(id),
                             question: fleet.questions[id],
                             nav: nav, mo: mo,
                             titleFrame: $titleFrames,
@@ -150,7 +151,7 @@ struct FleetLayer: View {
     private func zIndex(for slot: Slot) -> Double {
         guard case .agent(let id) = slot else { return 0 }
         if fleet.beats[id]?.lifted == true { return 3 }
-        return (fleet[id]?.isBlocked ?? false) ? 1 : 0
+        return fleet.shown(id) ? 1 : 0
     }
 
     private func role(for i: Int, heroIndex: Int?) -> Role {
@@ -525,7 +526,9 @@ private struct Metrics {
         for slot in slots {
             let h: Double
             switch slot {
-            case .agent(let id): h = (fleet[id]?.isBlocked ?? false) ? blockedRowHeight : rowHeight
+            // The *settled* flag, not the roster's: a blocked agent whose
+            // own beat has not run yet must not have already grown.
+            case .agent(let id): h = fleet.shown(id) ? blockedRowHeight : rowHeight
             case .retiredHeader: h = 52
             }
             tops.append(y)

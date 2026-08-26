@@ -55,7 +55,7 @@ struct MapLayer: View {
             VStack(spacing: 0) {
                 grabber
                 RecorderStrip(route: route, agent: agent, session: session,
-                              samples: rebuiltSamples(from: channel.moments),
+                              samples: channel.wave,
                               truncated: channel.hasOlder,
                               head: $head, budget: $budget,
                               onPurgeBefore: { onPurgeBefore($0) },

@@ -22,24 +22,38 @@ struct BlurSwap<Content: View>: View {
     @State private var shown: String = ""
     @State private var phase: Double = 1      // 1 settled, 0 mid-swap
     @State private var rising = false
+    /// Supersedes an in-flight swap. Without it, two changes inside the 190 ms
+    /// out-phase start two tasks that race to write `shown`, and the one that
+    /// lands last is not necessarily the one carrying the newest text -- so the
+    /// row settles on a stale intermediate string. The same shape `Channel`
+    /// uses an epoch for.
+    @State private var generation = 0
+    @State private var pendingText: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         content(shown)
             .modifier(Swap(phase: phase, rising: rising))
-            .onAppear { shown = text }
+            .onAppear { shown = text; pendingText = text }
             .onChange(of: text) { _, next in swap(to: next) }
             // The swap is decoration over a value VoiceOver should hear once.
             .accessibilityLabel(text)
     }
 
     private func swap(to next: String) {
-        guard next != shown else { return }
+        // Guarded against the target as well as against what is drawn: a swap
+        // already on its way to `next` must not be restarted by a roster tick
+        // that reports the same string again.
+        guard next != shown, next != pendingText else { return }
+        pendingText = next
         guard !reduceMotion else { shown = next; return }
         rising = false
+        generation &+= 1
+        let mine = generation
         withAnimation(.easeIn(duration: 0.19)) { phase = 0 }
         Task {
             try? await Task.sleep(for: .milliseconds(190))
+            guard generation == mine else { return }
             shown = next
             rising = true
             withAnimation(.easeOut(duration: 0.22)) { phase = 1 }
