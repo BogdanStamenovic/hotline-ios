@@ -286,15 +286,8 @@ private struct DurationBar: View {
         .accessibilityLabel("took \(label)")
     }
 
-    private var width: Double {
-        clamp(log10(1 + max(seconds, 0)) / log10(61), 0, 1) * 44 + 3
-    }
-
-    private var label: String {
-        seconds < 1 ? "\(Int(seconds * 1000))ms"
-                    : (seconds < 60 ? String(format: "%.1fs", seconds)
-                                    : "\(Int(seconds / 60))m")
-    }
+    private var width: Double { durationBarWidth(seconds) }
+    private var label: String { durationLabel(seconds) }
 }
 
 // MARK: - The optimistic echo

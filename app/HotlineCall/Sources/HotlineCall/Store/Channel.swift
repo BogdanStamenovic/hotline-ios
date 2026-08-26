@@ -84,9 +84,17 @@ final class Channel {
     private let link: Link
     private let cache: Cache
     private let log = Logger(subsystem: "dev.stamenovic.hotline", category: "channel")
-    /// `.task(id:)` owns the feed's lifetime. This guards against two views
-    /// briefly overlapping during a scene change and running two loops.
-    private var running = false
+    /// `.task(id:)` owns the feed's lifetime, and SwiftUI cancels the old task
+    /// before starting the new one -- but it does not *await* the old one, so
+    /// for a moment two runs overlap. A bool guard would have let the second one
+    /// return immediately and leave the channel with no feed at all, which is
+    /// bug 1 wearing a different hat. An epoch supersedes instead of blocking:
+    /// the newest run always wins and the older loop falls out on its next pass.
+    private var epoch = 0
+    /// Probed once. The deployed daemon predates `/agents/feed` entirely, and
+    /// retrying a 404 every five seconds forever is not degradation, it is a
+    /// busy loop with a banner.
+    private var channelsMissing = false
     /// Parked while an atomic presentation holds the screen (APP-PLAN 9.2).
     /// The cursor still advances and the cache is still written; only the
     /// visible array waits.
@@ -117,14 +125,13 @@ final class Channel {
 
     /// Called from `ChannelLayer`'s `.task(id: agentID)` and from nowhere else.
     func run(rosterGeneration: Int) async {
-        guard !running else { return }
-        running = true
-        defer { running = false }
-
+        epoch &+= 1
+        let mine = epoch
         await prime(rosterGeneration: rosterGeneration)
-        if Task.isCancelled { return }
+        guard !Task.isCancelled, epoch == mine else { return }
         await refresh()
-        await stream()
+        guard !Task.isCancelled, epoch == mine else { return }
+        await stream(mine)
     }
 
     /// Step 0: paint from the cache.
@@ -159,6 +166,7 @@ final class Channel {
     /// Step 2: the authoritative window. **Replaces rather than merges**, so a
     /// purge on the server cannot leave stale rows on the phone.
     func refresh() async {
+        guard !channelsMissing else { return }
         loading = moments.isEmpty ? .refreshing : .streaming
         do {
             let page = try await link.history(agent: name, before: nil, limit: 200)
@@ -168,6 +176,9 @@ final class Channel {
             apply(history: page)
             loading = .streaming
         } catch is CancellationError {
+            return
+        } catch let failure as Link.Failure where failure.isMissingEndpoint {
+            retire()
             return
         } catch {
             // The cached window is still on screen and is still the truest
@@ -196,9 +207,10 @@ final class Channel {
     /// Step 3: stream. Cancellation is cooperative -- the loop checks, and the
     /// long poll's suspension is cancelled by `URLSession`'s own task
     /// cancellation through the async `data(for:)` bridge.
-    private func stream() async {
+    private func stream(_ mine: Int) async {
+        guard !channelsMissing else { return }
         var backoff = Duration.milliseconds(250)
-        while !Task.isCancelled {
+        while !Task.isCancelled, epoch == mine {
             do {
                 let page = try await link.feed(agent: name, since: cursor, wait: 25)
                 if Task.isCancelled { return }
@@ -208,6 +220,9 @@ final class Channel {
                 loading = .streaming
                 backoff = .milliseconds(250)
             } catch is CancellationError {
+                return
+            } catch let failure as Link.Failure where failure.isMissingEndpoint {
+                retire()
                 return
             } catch {
                 if Task.isCancelled { return }
@@ -308,25 +323,17 @@ final class Channel {
 
     /// One `you` event reconciles at most one pending entry.
     ///
-    /// With a `client_token` this is exact. Without one it is FIFO and
-    /// positional, which is sound because this phone is the only writer of
-    /// `you` events for this agent -- and `sinceSeq` keeps a history page full
-    /// of *old* `you` events from popping anything, because none of them is
-    /// newer than the bubble was.
-    ///
-    /// A tokened event that matches no bubble pops nothing at all. That is the
-    /// case a retask produces, and FIFO alone would have let it eat the
-    /// composer's bubble.
+    /// **The rule itself is `reconciled(_:in:)` in `Wire/Rules.swift`**, which
+    /// is a pure function over values and is therefore the one part of bug 3's
+    /// fix that can actually be executed on the machine this is built on.
     private func reconcile(_ arrivals: [Moment]) {
         guard !pending.isEmpty else { return }
         for moment in arrivals where moment.kind == .you {
-            if let token = moment.clientToken {
-                pending.removeAll { $0.token == token }
-                continue
+            let slots = pending.map {
+                PendingSlot(token: $0.token, sinceSeq: $0.sinceSeq,
+                            inFlight: $0.delivery == .inFlight)
             }
-            guard let index = pending.firstIndex(where: {
-                $0.delivery == .inFlight && $0.sinceSeq < moment.seq
-            }) else { continue }
+            guard let index = reconciled(moment, in: slots) else { continue }
             pending.remove(at: index)
         }
     }
@@ -414,6 +421,15 @@ final class Channel {
         primed = true      // there is nothing left on disk worth priming from
         loading = .cold
         Task { [cache, name] in await cache.drop(name) }
+    }
+
+    /// This daemon does not have agent channels. Not a failure to retry: a
+    /// fact about the server, said once. The roster and the controls still work
+    /// -- only the transcript does not exist over this wire.
+    private func retire() {
+        channelsMissing = true
+        loading = .failed("archserver has no agent channels yet — its transcript lives on the daemon.")
+        log.notice("\(self.name, privacy: .public): no /agents/feed on this daemon")
     }
 
     private func describe(_ error: any Error) -> String {
