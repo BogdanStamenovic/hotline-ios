@@ -152,7 +152,26 @@ struct InstrumentStrip: View {
                 // Per glyph, so a changing number does not blur-crossfade the
                 // digits that did not change.
                 .contentTransition(.numericText())
-                .animation(.meter, value: text)
+                // **The clock does not get the spring.** `.meter` is
+                // `stiffness 260, damping 26` -- w0 16.1, z 0.81, so it takes
+                // about 310 ms to settle. That is right for a measurement: the
+                // reasoning on `contextBar` is that a readout which moves reads
+                // as a measurement and one that jumps reads as a refresh.
+                //
+                // ELAPSED is not a measurement. It is a `TimelineView` ticking
+                // once a second, so a 310 ms spring on it means the seconds
+                // digit is mid-flight, blurred by `numericText`, for roughly a
+                // third of every second, for as long as the channel is open --
+                // a permanent shimmer that never settles because the next tick
+                // always arrives first. It shows up plainly in a screenshot of
+                // a running channel: CONTEXT crisp, ELAPSED's last digit
+                // smeared across two glyphs.
+                //
+                // A clock is not moving to a value that was discovered; it is
+                // incrementing on schedule. It gets a short linear fade, which
+                // is over long before the next tick.
+                .animation(cell.clockFrom == nil ? .meter : .linear(duration: 0.08),
+                           value: text)
         }
     }
 

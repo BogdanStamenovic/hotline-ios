@@ -77,7 +77,14 @@ struct MapLayer: View {
                       // starts lower belongs to the timeline's scrub.
                       accepts: { $0.y < 90 },
                       delta: { $0.height / max(geo.size.height, 1) * 1.35 },
-                      rate: { $0.height / max(geo.size.height, 1) * 1.35 },
+                      // The 1.35 is a gain on POSITION only -- a short drag
+                      // travels further, so the panel keeps up with a thumb that
+                      // has little room. Velocity deliberately does not carry it:
+                      // `seamTarget`'s flick threshold is in seam-units/s, so
+                      // multiplying the rate made this seam commit on a throw
+                      // 1.35x gentler than every other seam's. Same gesture, same
+                      // answer, everywhere.
+                      rate: { $0.height / max(geo.size.height, 1) },
                       phase: onDrag)
         }
         .allowsHitTesting(progress > 0.5 || seamDragging)

@@ -71,8 +71,31 @@ nonisolated func project(_ velocity: Double) -> Double { velocity * 0.499 }
 ///
 /// It is a free function so `app/wiretest/run.sh` can execute the invariant:
 /// no `(progress, velocity)` pair produces anything other than 0 or 1.
-nonisolated func seamTarget(_ progress: Double, velocity: Double, commit: Double) -> Double {
-    progress + project(velocity) < commit ? 0 : 1
+///
+/// **`flick` exists because folding velocity into position made every seam
+/// disagree about how hard a throw has to be.** The rule used to be position
+/// plus `project(velocity)` against `commit`, and nothing else -- so the only
+/// way to tune throw sensitivity was to move the commit point, which also moves
+/// where a *slow* drag commits. The seams then drifted apart: with `commit`
+/// 0.55 and no gain, nav and the sheets needed **937 pt/s** to flick open from
+/// rest, while the map at 0.42 with its 1.35 gain needed **530 pt/s**. Same
+/// gesture, 1.8x the effort, on surfaces that look identical.
+///
+/// Splitting the two restores one answer to "was that a throw?" for every seam
+/// while each keeps its own position threshold. 0.6 seam-units/s is about
+/// 510 pt/s on a full-height sheet -- the map's number, which was the more
+/// forgiving of the two and the one that already felt right.
+///
+/// Note it is deliberately checked *before* position: a decisive throw means
+/// the same thing wherever the finger happens to have got to, and that is the
+/// whole difference between a throw and a drag.
+private nonisolated let seamFlick = 0.6
+
+nonisolated func seamTarget(_ progress: Double, velocity: Double, commit: Double,
+                            flick: Double = seamFlick) -> Double {
+    if velocity > flick { return 1 }
+    if velocity < -flick { return 0 }
+    return progress + project(velocity) < commit ? 0 : 1
 }
 
 // MARK: - The fleet list's row swipe
@@ -107,13 +130,33 @@ nonisolated enum SwipeOutcome: String, Sendable, Hashable {
 ///
 /// Opening still reads the projected end, because whether he *meant* to leave
 /// the row open genuinely is a momentum question.
+///
+/// **The two directions share one set of numbers, and that is the second half
+/// of "the swipe does random things".** They used to differ on all three
+/// thresholds -- fire at `limit + 74` left but `limit + 66` right, the fling
+/// gated at 60 pt left but 50 pt right, and open proportional to the drawer on
+/// the left (`limit * 0.62`) but a flat 74 pt on the right. With the real
+/// limits (left 148 live / 132 done, right 118) that cost 38 pt more travel to
+/// fire left than right and 18 pt more to open, and because only the left was
+/// proportional, **the same gesture opened a live agent's row at 91.8 pt and a
+/// finished one at 81.8 pt** -- two rows in one list, no way to tell by feel.
+///
+/// Nothing here is a per-direction tuning any more: one overshoot, one fling
+/// gate, one open fraction, applied to whichever limit that side declares.
+/// Proportional on both sides is the substantive choice -- the distance that
+/// should mean "he wants it open" is a fraction of how deep that drawer is, not
+/// a constant that happens to suit a 118 pt one.
+private nonisolated let fireOvershoot = 66.0
+private nonisolated let flingGate = 50.0
+private nonisolated let openFraction = 0.62
+
 nonisolated func swipeOutcome(x: Double, velocity: Double,
                               leftLimit: Double, rightLimit: Double) -> SwipeOutcome {
-    if leftLimit > 0, x < -leftLimit - 74 || (velocity < -1100 && x < -60) { return .fireLeft }
-    if rightLimit > 0, x > rightLimit + 66 || (velocity > 1100 && x > 50) { return .fireRight }
+    if leftLimit > 0, x < -leftLimit - fireOvershoot || (velocity < -1100 && x < -flingGate) { return .fireLeft }
+    if rightLimit > 0, x > rightLimit + fireOvershoot || (velocity > 1100 && x > flingGate) { return .fireRight }
     let end = x + project(velocity)
-    if leftLimit > 0, end < -leftLimit * 0.62 { return .openLeft }
-    if rightLimit > 0, end > 74 { return .openRight }
+    if leftLimit > 0, end < -leftLimit * openFraction { return .openLeft }
+    if rightLimit > 0, end > rightLimit * openFraction { return .openRight }
     return .closed
 }
 

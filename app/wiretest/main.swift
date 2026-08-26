@@ -786,6 +786,91 @@ check(-L + project(-200) < -L - 74,
 check(!(-L < -L - 74),
       "the new one needs the finger to actually be there, and at the limit it is not")
 
+// **Left and right must be the same gesture.** The thresholds were tuned per
+// direction and had drifted apart; with the real limits that was 38 pt more
+// travel to fire left than right and 18 pt more to open, and the open rule was
+// proportional on one side and a flat constant on the other -- so two rows in
+// the same list answered the same swipe differently. This is the property that
+// keeps them together, rather than three constants that happen to match today.
+do {
+    var offenders: [String] = []
+    func mirror(_ o: SwipeOutcome) -> SwipeOutcome {
+        switch o {
+        case .fireLeft: return .fireRight
+        case .fireRight: return .fireLeft
+        case .openLeft: return .openRight
+        case .openRight: return .openLeft
+        case .closed: return .closed
+        }
+    }
+    for (a, b) in [(L, R), (R, L), (132.0, 118.0), (118.0, 118.0)] {
+        for x in stride(from: -400.0, through: 400.0, by: 1.0) {
+            for v in stride(from: -3000.0, through: 3000.0, by: 25.0) {
+                let got = swipeOutcome(x: x, velocity: v, leftLimit: a, rightLimit: b)
+                let flipped = swipeOutcome(x: -x, velocity: -v, leftLimit: b, rightLimit: a)
+                if got != mirror(flipped) { offenders.append("L=\(a) R=\(b) x=\(x) v=\(v)") }
+            }
+        }
+    }
+    check(offenders.isEmpty,
+          "**mirroring the swipe mirrors the outcome** -- \(offenders.count) asymmetric cells "
+          + "(was 4 206 with the per-direction constants)")
+}
+
+// The specific pairs his hand would have noticed, named rather than swept.
+check(swipeOutcome(x: -L - 70, velocity: 0, leftLimit: L, rightLimit: R) == .fireLeft
+      && swipeOutcome(x: R + 70, velocity: 0, leftLimit: L, rightLimit: R) == .fireRight,
+      "the same overshoot past either limit fires, where left used to need 8 pt more")
+check(swipeOutcome(x: -55, velocity: -1400, leftLimit: L, rightLimit: R) == .fireLeft
+      && swipeOutcome(x: 55, velocity: 1400, leftLimit: L, rightLimit: R) == .fireRight,
+      "and the fling gate opens at the same 50 pt both ways, where left used to need 60")
+
+// A live agent and a finished one differ only in how deep the drawer is, so the
+// fraction of it that means "open this" has to be the same fraction.
+check(abs(-148.0 * 0.62 - -91.76) < 1e-9 && abs(-132.0 * 0.62 - -81.84) < 1e-9,
+      "open scales with the drawer: 91.8 pt on a live row, 81.8 pt on a finished one")
+
+// ---------------------------------------------------------------------------
+section("the seam flick threshold, which every seam now shares")
+
+// The defect: velocity only ever reached the decision through `project()` added
+// to position, so `commit` was the single knob and the seams had drifted to
+// different ones. Nav and the sheets sat at 0.55 with unit gain; the map at
+// 0.42 with 1.35. In pt/s on a full-height surface that is 937 against 530.
+do {
+    let viewport = 850.0
+    func flickToOpen(commit: Double, gain: Double) -> Double {
+        for pts in stride(from: 0.0, through: 3000.0, by: 1.0) {
+            let seamPerSec = pts / viewport * gain
+            if seamTarget(0, velocity: seamPerSec, commit: commit) == 1 { return pts }
+        }
+        return .infinity
+    }
+    // Every seam's `rate` closure now reports true seam-units/s -- the map's
+    // 1.35 is a position gain and no longer touches velocity -- so the flick
+    // threshold is the same gesture on all five regardless of their commits.
+    let nav = flickToOpen(commit: 0.55, gain: 1.0)
+    let sheet = flickToOpen(commit: 0.55, gain: 1.0)
+    let map = flickToOpen(commit: 0.42, gain: 1.0)
+    check(nav == sheet && nav == map,
+          "**all five seams open on the same throw** -- \(Int(nav)) pt/s, "
+          + "where nav wanted 937 and the map 530")
+    check(nav < 700, "and it is a deliberate flick rather than a shove: \(Int(nav)) pt/s")
+}
+
+// The throw beats position wherever the finger got to -- that is what makes it
+// a throw rather than a fast drag. Position still decides everything below it.
+check(seamTarget(0.02, velocity: 0.7, commit: 0.55) == 1,
+      "**a decisive throw from nearly shut opens it**, which at commit 0.55 it did not")
+check(seamTarget(0.98, velocity: -0.7, commit: 0.42) == 0,
+      "and a decisive throw from nearly open shuts it")
+check(seamTarget(0.3, velocity: 0.2, commit: 0.55) == 0,
+      "a drift under the flick threshold is still judged on position")
+check(seamTarget(0.8, velocity: -0.2, commit: 0.55) == 1,
+      "and so is a drift the other way, which at 0.8 is still past the commit")
+check(seamTarget(0.6, velocity: -0.2, commit: 0.55) == 0,
+      "a slow drift back from 0.6 lands at 0.500 and closes -- position, not the throw")
+
 // ---------------------------------------------------------------------------
 section("authority: a standing role, carried through untouched")
 
