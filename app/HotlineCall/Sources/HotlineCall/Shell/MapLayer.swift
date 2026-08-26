@@ -91,7 +91,19 @@ struct MapLayer: View {
         // The reveal is torn down 440 ms *after* the panel has left, not on
         // release: resetting on release empties the map while he is still
         // watching it go.
-        .onChange(of: progress > 0.04) { _, peeking in
+        // **`initial: true` is the whole reason the map had any content.**
+        // `Shell` gates this layer behind `if mapOpen`, and it sets `mapOpen`
+        // from the same threshold in the same transaction as `map` -- so
+        // `MapLayer` is *created* with `progress` already past 0.04 and the
+        // predicate is true at its first evaluation. `onChange` does not fire
+        // for an initial value, so `reveal` stayed at its `@State` 0 for the
+        // life of the panel. Everything inside `RouteTimeline` is gated on it:
+        // the spine is `scaleEffect(y: reveal * 1.15)`, every row's `appear`
+        // divides it, and `MapFoot` is `.opacity(reveal)`. The map therefore
+        // drew its recorder strip -- which lives outside `RouteTimeline` -- and
+        // nothing else, on every open, which is exactly what it looks like: a
+        // header, a strip, and a screen of black where the route should be.
+        .onChange(of: progress > 0.04, initial: true) { _, peeking in
             if peeking {
                 withAnimation(.enter.delay(0.09)) { reveal = 1 }
             } else {

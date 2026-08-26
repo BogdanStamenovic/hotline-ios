@@ -49,12 +49,28 @@ struct RecorderStrip: View {
                                 .frame(width: max(0, geo.size.width * 0.12))
                             Spacer(minLength: 0)
                         }
+                        // **`rotationEffect` does not change layout.** It is a
+                        // geometry effect: the layout system still sees the
+                        // child's *unrotated* size. With `fixedSize()` after it
+                        // the text took its natural ~132 pt width, was centred
+                        // in a 60 pt-tall box, and painted ~36 pt past each end
+                        // -- over the readouts above and the legend below.
+                        //
+                        // The frame that has to fit the string is therefore the
+                        // one applied *before* the rotation, and its width is
+                        // the height the label will occupy once turned. 96 pt
+                        // is what this strip can spare; the scale factor takes
+                        // up the rest rather than letting it spill again if the
+                        // string or the type ramp ever changes.
                         Text("OLDER HISTORY NOT LOADED")
                             .text(.label(9.5))
                             .foregroundStyle(Theme.ink4)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.55)
+                            .frame(width: 96)
                             .rotationEffect(.degrees(-90))
-                            .fixedSize()
-                            .frame(width: max(0, geo.size.width * 0.12), height: 60)
+                            .frame(width: max(0, geo.size.width * 0.12), height: 96)
+                            .clipped()
                             .padding(.top, 4)
                     }
 
