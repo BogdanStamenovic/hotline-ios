@@ -19,10 +19,25 @@ struct ChannelLayer: View {
     let channel: Channel
     let nav: Double
     let mo: Double
+    /// Bumped after every atomic run. **The self-cut is a hard cut, not a
+    /// no-op** (APP-PLAN 9.7): when the answer came from the in-thread question
+    /// the destination is the screen he is already looking at, and it still
+    /// replays its own arrival. It reads as "this is now a new scene" even
+    /// though nothing navigated -- and that is exactly true: the question is
+    /// gone, his answer is in, and the agent has moved.
+    let cut: Int
+    /// Flow A's pre-roll is running on the answer card.
+    let committing: Bool
     let onBack: () -> Void
     let onDrag: (ScrubPhase) -> Void
     let onControls: () -> Void
     let onContinue: () -> Void
+    let onMapDrag: (SheetPhase) -> Void
+    let onAnswer: (String) -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 1 settled. Driven to 0 and back on every `cut`.
+    @State private var arrival: Double = 1
 
     var body: some View {
         GeometryReader { geo in
@@ -31,12 +46,24 @@ struct ChannelLayer: View {
 
                 VStack(alignment: .leading, spacing: 0) {
                     header
-                    ThreadView(channel: channel, nav: nav, mo: mo,
+                    ThreadView(channel: channel, nav: nav, mo: mo, cut: arrival,
                                onRetry: { channel.retry($0) },
                                onContinue: onContinue)
                         .frame(maxHeight: .infinity)
-                    Composer(answering: channel.answering != nil) { channel.send($0) }
-                        .staged(.composer, nav, mo)
+                    // While a question is open the composer is replaced by the
+                    // surface that answers it: one input, one commit gesture.
+                    // The composer stays exactly as dumb as it was.
+                    if let question = channel.question, channel.answering != nil {
+                        AnswerCard(question: question,
+                                   blockedSince: agent.blockedAt ?? channel.askedAt,
+                                   committing: committing, onCommit: onAnswer)
+                            .padding(.horizontal, Theme.edge)
+                            .padding(.bottom, 12)
+                            .staged(.composer, nav, mo)
+                    } else {
+                        Composer(answering: channel.answering != nil) { channel.send($0) }
+                            .staged(.composer, nav, mo)
+                    }
                 }
 
                 // The left 44 pt belongs to the back gesture and nothing else.
@@ -50,12 +77,35 @@ struct ChannelLayer: View {
                     .staged(.backChevron, nav, mo)
             }
             .staged(.channel, nav, mo)
+            // The screen cut. Outgoing 260 ms ease-out, incoming 420 ms
+            // ease-cine; every message re-staggers from scratch inside
+            // `ThreadView`, 52 ms per index.
+            .opacity(arrival)
+            .scaleEffect(lerp(0.965, 1, arrival))
+            .blur(radius: ((1 - arrival) * 5).rounded())
+            .offset(y: (1 - arrival) * 20 * mo)
         }
+        .onChange(of: cut) { _, _ in selfCut() }
         // The whole seam: paint from cache, drop it if the generation moved,
         // replace the visible window from history, then stream. One task,
         // because the steps must happen in order.
         .task(id: agent.name) {
             await channel.run(rosterGeneration: agent.generation)
+        }
+    }
+
+    /// A hard cut, deliberately. `withAnimation` on a value that goes 0 then 1
+    /// rather than a transition, because the incoming half has to be able to
+    /// stagger the thread against the same number.
+    private func selfCut() {
+        let quiet = reduceMotion
+        withAnimation(.easeOut(duration: quiet ? 0.20 : 0.26)) { arrival = 0 }
+        Task {
+            try? await Task.sleep(for: .milliseconds(quiet ? 200 : 260))
+            withAnimation(quiet ? .easeOut(duration: 0.16)
+                                : .timingCurve(0.16, 1, 0.3, 1, duration: 0.42)) {
+                arrival = 1
+            }
         }
     }
 
@@ -80,8 +130,27 @@ struct ChannelLayer: View {
                 .padding(.top, 10)
 
             HStack(spacing: 10) {
-                PhaseChip(count: channel.phases.count)
+                // Pull it down to open the map. `p = dy / height * 1.35`,
+                // and the reveal starts as soon as it is peeking rather than at
+                // the commit, so the panel is never a blank rectangle.
+                PhaseChip(count: channel.route.phases.count)
                     .staged(.phaseChip, nav, mo)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 6)
+                            .onChanged { value in
+                                let height = max(UIScreen.main.bounds.height, 1)
+                                onMapDrag(.move(clamp(value.translation.height / height * 1.35,
+                                                      0, 1)))
+                            }
+                            .onEnded { value in
+                                let height = max(UIScreen.main.bounds.height, 1)
+                                onMapDrag(.release(value.velocity.height / height * 1.35))
+                            }
+                    )
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel("Route. \(channel.route.phases.count) phases.")
+                    .accessibilityAction { onMapDrag(.move(1)); onMapDrag(.release(0)) }
                 Spacer(minLength: 0)
             }
             .padding(.top, 18)
