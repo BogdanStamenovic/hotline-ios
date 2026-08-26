@@ -77,8 +77,14 @@ final class DriveTests: XCTestCase {
 
     /// The first row's spoken label begins with the agent's name; matching on
     /// `label BEGINSWITH` is the only stable handle the app offers.
+    /// A fleet row, by the agent name its label starts with.
+    ///
+    /// `buttons`, not `descendants(matching: .any)`: the attached trees show
+    /// each row as `Button, label: '<name>, ...'`, and the `.any` form does not
+    /// reliably resolve against SwiftUI's tree -- it is what made the drive
+    /// think there was no row to tap and fall through to a coordinate.
     private func row(_ app: XCUIApplication, named name: String) -> XCUIElement {
-        app.descendants(matching: .any)
+        app.buttons
             .matching(NSPredicate(format: "label BEGINSWITH[c] %@", name))
             .firstMatch
     }
@@ -185,17 +191,42 @@ final class DriveTests: XCTestCase {
         // ---- 4. open a channel ----------------------------------------------
         // A synthetic tap never travels 8 pt, so the arbiter resolves it as a
         // tap and `Shell.enter` flies the hero title across.
+        // **The drive has to prove it got in, because everything after this
+        // depends on it.** On run 32958131657 the row was not hittable -- the
+        // fling above had scrolled it out of view -- the blind coordinate tap
+        // opened nothing, and the drive then spent twenty seconds performing
+        // "thread" scrolls and five "map" steps against the fleet list. The
+        // tree attached at the end of that is unmistakable: `HOTLINE`,
+        // `9 AGENTS - 1 BLOCKED`, rows with RETASK/STOP/KILL. No channel was
+        // ever open, and nothing said so.
         mark("channel: tap a row")
+        // The blocked agent is pinned to the top, so undo the fling first
+        // rather than hunting for wherever it ended up.
+        at(0.5, 0.30).press(forDuration: 0.05, thenDragTo: at(0.5, 0.85),
+                            withVelocity: .fast, thenHoldForDuration: 0.0)
+        settle(1.2)
         let target = row(app, named: "hotline-ios")
         if target.exists && target.isHittable {
             target.tap()
         } else {
-            mark("  (row not hittable, tapping its coordinate instead)")
-            at(0.5, 0.44).tap()
+            mark("  row not hittable; tapping the first hittable row instead")
+            let any = app.buttons.allElementsBoundByIndex.first { $0.isHittable }
+            if let any { any.tap() } else { at(0.5, 0.44).tap() }
         }
         settle(2.0)
         attachTree(app, name: "channel-tree")
         attachShot("channel-shot")
+
+        // One check, at the point the failure actually happens. `route-chip` is
+        // the channel's own chrome, so its absence means no channel -- and it
+        // is the element every map step below needs anyway.
+        guard app.buttons["route-chip"].waitForExistence(timeout: 5) else {
+            mark("  NO CHANNEL -- the tap did not open one; thread and map steps skipped")
+            XCTFail("channel did not open; every step after the row tap would have run against the fleet")
+            attachTree(app, name: "channel-tree-never-opened")
+            return
+        }
+        mark("  channel is open")
 
         // ---- 5. scroll the thread -------------------------------------------
         // ThreadView ignores anything starting in the left 44 pt, which belongs
