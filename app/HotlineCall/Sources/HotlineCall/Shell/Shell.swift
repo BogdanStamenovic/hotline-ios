@@ -228,7 +228,20 @@ struct Shell: View {
         guard open == nil, sheetKind == nil, !locked else { return }
         guard let target = autoOpen(in: fleet.agents, launch: how,
                                     backedOutAt: backedOutAt) else { return }
-        enter(target)
+        Task {
+            // The transition it runs is the one a tap runs, and that one lifts
+            // the row's own name out of the list -- which needs the row to have
+            // been measured. On a cold launch the roster lands before the first
+            // layout pass, so wait for the measurement rather than flying from
+            // `.zero`. Bounded, because a target that never appears (it was
+            // retired, it finished) must not leave a task waiting forever.
+            for _ in 0..<8 where titleFrames[target] == nil {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard open == nil, sheetKind == nil, !locked,
+                  fleet[target]?.isBlocked == true else { return }
+            enter(target)
+        }
     }
 
     private func refresh() {
