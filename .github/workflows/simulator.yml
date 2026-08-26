@@ -17,9 +17,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Keyed on the commit, not the branch. Branch-keyed with cancel-in-progress
+# meant every push from a peer session working in this repo killed the run that
+# was mid-flight -- three runs died that way having never reached the simulator,
+# which reads exactly like a build failure and is not one.
 concurrency:
-  group: simulator-${{ github.ref }}
-  cancel-in-progress: true
+  group: simulator-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   # The Foundation-only checks, kept green. They run on macOS here rather than
