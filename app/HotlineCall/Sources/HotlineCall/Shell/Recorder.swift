@@ -265,12 +265,17 @@ struct RecorderStrip: View {
                 dragging = false
                 let landing = (head.cursor / span + project(value.velocity.width) / max(width, 1))
                 let target = clamp(landing, 0, 1) * span
-                if let snap = snapped(target, to: route.boundaries(since: session?.lowerBound ?? .now),
-                                      span: span) {
-                    head.scrub(to: snap)
-                    budget.fire()
-                } else {
-                    head.scrub(to: target)
+                let boundaries = route.boundaries(since: session?.lowerBound ?? .now)
+                // Momentum on release, and the snap rides it rather than
+                // teleporting: the playhead's x is linear in the cursor, so the
+                // interpolated offset is the same number re-derived.
+                withAnimation(.snap) {
+                    if let snap = snapped(target, to: boundaries, span: span) {
+                        head.scrub(to: snap)
+                        budget.fire()
+                    } else {
+                        head.scrub(to: target)
+                    }
                 }
                 head.release()
             }

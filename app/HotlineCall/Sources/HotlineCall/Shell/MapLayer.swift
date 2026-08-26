@@ -13,6 +13,23 @@ import SwiftUI
 /// endpoint does not list one either. They are reconstructed from the event
 /// stream instead -- see `Store/Route.swift`, where the reconstruction is
 /// Foundation-only and therefore actually executed by `app/wiretest/run.sh`.
+/// The map's fixed geometry.
+///
+/// The focus band sits 170 pt from the top of the map view. The content has a
+/// 170 pt lead-in and a 380 pt run-out: without them the timeline can never
+/// bring its own ends into the band, **and the last phase is exactly where a
+/// blocked agent lives.**
+///
+/// `nonisolated` because the column is walked from `RouteTimeline`, whose
+/// `animatableData` puts it off the main actor.
+nonisolated enum Map {
+    static let band: Double = 170
+    static let leadIn: Double = 170
+    static let runOut: Double = 380
+    static let phaseRow: Double = 84
+    static let toolRow: Double = 27
+}
+
 struct MapLayer: View {
     let agent: Agent
     let channel: Channel
@@ -30,15 +47,6 @@ struct MapLayer: View {
     @State private var reveal: Double = 0
     @State private var budget = HapticBudget()
 
-    /// The focus band sits 170 pt from the top of the map view. The content has
-    /// a 170 pt lead-in and a 380 pt run-out: without them the timeline can
-    /// never bring its own ends into the band, **and the last phase is exactly
-    /// where a blocked agent lives.**
-    private static let band: Double = 170
-    private static let leadIn: Double = 170
-    private static let runOut: Double = 380
-    private static let phaseRow: Double = 84
-    private static let toolRow: Double = 27
 
     private var route: Route { channel.route }
 
@@ -103,44 +111,14 @@ struct MapLayer: View {
     // MARK: - The timeline
 
     private func timeline(_ size: CGSize) -> some View {
-        // The spine draws down and the phases follow it as the panel arrives.
-        let spine = clamp(reveal * 1.15, 0, 1)
-        return ZStack(alignment: .topLeading) {
-            Rectangle()
-                .fill(Theme.line2)
-                .frame(width: 1)
-                .frame(maxHeight: .infinity, alignment: .top)
-                .scaleEffect(y: spine, anchor: .top)
-                .padding(.leading, Theme.edge + 5)
-                .allowsHitTesting(false)
-
-            let tops = column
-            ForEach(Array(route.phases.enumerated()), id: \.element.id) { index, phase in
-                let top = tops[index] + scroll
-                PhaseRow(phase: phase, index: index, count: route.phases.count,
-                         on: focusBand(top: top, band: Self.band),
-                         appear: smoothstep(clamp((reveal - Double(index) * 0.10) / 0.5, 0, 1)),
-                         mo: mo)
-                    .frame(width: size.width - Theme.edge * 2, alignment: .leading)
-                    .offset(x: Theme.edge, y: top)
+        RouteTimeline(route: route, blocked: agent.isBlocked,
+                      scroll: scroll, reveal: reveal, mo: mo, size: size)
+            .contentShape(Rectangle())
+            .gesture(scrub(height: size.height))
+            .accessibilityScrollAction { edge in
+                settle(to: clampScroll(scroll + (edge == .top ? 240 : -240)), velocity: 0)
             }
-
-            MapFoot(open: route.phases.last?.isOpen ?? false,
-                    blocked: agent.isBlocked,
-                    unphased: route.unphased.count,
-                    empty: route.isEmpty)
-                .frame(width: size.width - Theme.edge * 2, alignment: .leading)
-                .offset(x: Theme.edge, y: (tops.last ?? Self.leadIn) + scroll)
-                .opacity(reveal)
-        }
-        .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .clipped()
-        .contentShape(Rectangle())
-        .gesture(scrub(height: size.height))
-        .accessibilityScrollAction { edge in
-            settle(to: clampScroll(scroll + (edge == .top ? 240 : -240)), velocity: 0)
-        }
-        .onChange(of: head.cursor) { _, cursor in follow(cursor) }
+            .onChange(of: head.cursor) { _, cursor in follow(cursor) }
     }
 
     /// Every phase's top, computed once, top-down.
@@ -156,20 +134,22 @@ struct MapLayer: View {
     /// **The height is written only when the rounded value changes.** Height is
     /// the one non-compositor property on this screen -- there is no transform
     /// equivalent for a list closing a gap -- so it is not written per frame.
-    private var column: [Double] {
+    nonisolated static func column(_ phases: [RoutePhase], scroll: Double) -> [Double] {
         var tops: [Double] = []
-        var y = Self.leadIn
-        for phase in route.phases {
+        var y = Map.leadIn
+        for phase in phases {
             tops.append(y)
-            let on = focusBand(top: y + scroll, band: Self.band)
-            y += Self.phaseRow + (on * Double(phase.tools.count) * Self.toolRow + 2).rounded()
+            let on = focusBand(top: y + scroll, band: Map.band)
+            y += Map.phaseRow + (on * Double(phase.tools.count) * Map.toolRow + 2).rounded()
         }
         tops.append(y)
         return tops
     }
 
+    private var column: [Double] { Self.column(route.phases, scroll: scroll) }
+
     private var contentHeight: Double {
-        (column.last ?? Self.leadIn) + Self.runOut
+        (column.last ?? Map.leadIn) + Map.runOut
     }
 
     // MARK: - Scrubbing the timeline
@@ -205,7 +185,7 @@ struct MapLayer: View {
         var best: Double?
         var gap = Double.greatestFiniteMagnitude
         for index in route.phases.indices {
-            let target = Self.band - tops[index]
+            let target = Map.band - tops[index]
             let distance = abs(target - landing)
             if distance < gap { gap = distance; best = target }
         }
@@ -233,7 +213,7 @@ struct MapLayer: View {
     /// start. This is the timeline writing the shared cursor.
     private func cursor(forScroll value: Double) -> TimeInterval {
         guard let session else { return 0 }
-        let y = Self.band - value
+        let y = Map.band - value
         let tops = column
         var index = 0
         for i in route.phases.indices where tops[i] <= y { index = i }
@@ -253,7 +233,7 @@ struct MapLayer: View {
         let instant = session.lowerBound.addingTimeInterval(cursor)
         guard let phase = route.phase(at: instant),
               let index = route.phases.firstIndex(where: { $0.id == phase.id }) else { return }
-        withAnimation(.glide) { scroll = clampScroll(Self.band - column[index]) }
+        withAnimation(.glide) { scroll = clampScroll(Map.band - column[index]) }
     }
 
     /// The `seq` the cursor resolves to, for "delete everything before here".
@@ -277,7 +257,6 @@ struct MapLayer: View {
             }
     }
 
-    private func smoothstep(_ t: Double) -> Double { t * t * (3 - 2 * t) }
 }
 
 // MARK: - One phase
@@ -446,4 +425,69 @@ private struct MapFoot: View {
         if blocked { return "ROUTE CONTINUES WHEN YOU ANSWER" }
         return open ? "STILL RUNNING" : "END OF ROUTE"
     }
+}
+
+/// The timeline, as a `View` that owns the scroll as its `animatableData`.
+///
+/// **This is the `withAnimation` model-value trap, and the map is where it
+/// bites hardest.** Every phase's openness is `focusBand(top:)` -- a clamped
+/// distance from the band -- and its height and its tool rows' stagger follow
+/// from that. If the view merely *read* `scroll`, SwiftUI would set the model
+/// value to its target immediately and interpolate each derived opacity and
+/// height linearly between its own two endpoints: a fling would open and close
+/// nothing on the way past, and every phase would simply crossfade to its final
+/// state. Owning `scroll` here is what forces `body` to be re-evaluated per
+/// frame, so the band is recomputed at the position the list is actually at.
+///
+/// It is the same reason `Staged` exists for the scene change, and the failure
+/// mode is the same one: silent, and it looks merely "less good".
+private struct RouteTimeline: View, Animatable {
+    let route: Route
+    let blocked: Bool
+    var scroll: Double
+    let reveal: Double
+    let mo: Double
+    let size: CGSize
+
+    var animatableData: Double {
+        get { scroll }
+        set { scroll = newValue }
+    }
+
+    var body: some View {
+        // The spine draws down and the phases follow it as the panel arrives.
+        let spine = clamp(reveal * 1.15, 0, 1)
+        let tops = MapLayer.column(route.phases, scroll: scroll)
+        return ZStack(alignment: .topLeading) {
+            Rectangle()
+                .fill(Theme.line2)
+                .frame(width: 1)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .scaleEffect(y: spine, anchor: .top)
+                .padding(.leading, Theme.edge + 5)
+                .allowsHitTesting(false)
+
+            ForEach(Array(route.phases.enumerated()), id: \.element.id) { index, phase in
+                let top = tops[index] + scroll
+                PhaseRow(phase: phase, index: index, count: route.phases.count,
+                         on: focusBand(top: top, band: Map.band),
+                         appear: smoothstep(clamp((reveal - Double(index) * 0.10) / 0.5, 0, 1)),
+                         mo: mo)
+                    .frame(width: size.width - Theme.edge * 2, alignment: .leading)
+                    .offset(x: Theme.edge, y: top)
+            }
+
+            MapFoot(open: route.phases.last?.isOpen ?? false,
+                    blocked: blocked,
+                    unphased: route.unphased.count,
+                    empty: route.isEmpty)
+                .frame(width: size.width - Theme.edge * 2, alignment: .leading)
+                .offset(x: Theme.edge, y: (tops.last ?? Map.leadIn) + scroll)
+                .opacity(reveal)
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .clipped()
+    }
+
+    private func smoothstep(_ t: Double) -> Double { t * t * (3 - 2 * t) }
 }

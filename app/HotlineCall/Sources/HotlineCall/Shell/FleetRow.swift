@@ -284,12 +284,22 @@ nonisolated struct SideWipe: Shape {
 /// The reveal is driven by the wash beat rather than by its own timer, so the
 /// two cannot drift; the delay is expressed as the fraction of the 640 ms wash
 /// that has to elapse first.
-private struct PinBar: View {
-    let reveal: Double
+private struct PinBar: View, Animatable {
+    /// Owned as `animatableData` rather than merely read: the 120 ms delay is
+    /// expressed as a clamp on the wash's own progress, and a view that only
+    /// read the value would have SwiftUI interpolate the *result* of that clamp
+    /// linearly between its endpoints -- which deletes the delay and turns the
+    /// reveal into a plain grow. The same trap `Staged` exists for.
+    var reveal: Double
     let breathing: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var breath = false
+
+    var animatableData: Double {
+        get { reveal }
+        set { reveal = newValue }
+    }
 
     var body: some View {
         Rectangle()
