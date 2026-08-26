@@ -300,22 +300,27 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ -s out/control-frametimes.json ]; then
-            APP=$(python3 -c "import json;print(json.load(open('out/frametimes.json'))['dropped_frame_pct'])")
             CTL=$(python3 -c "import json;print(json.load(open('out/control-frametimes.json'))['dropped_frame_pct'])")
+            # Re-score the app against the floor the control just measured,
+            # rather than against a 60fps ideal this runner cannot reach.
+            python3 ci/frametimes.py out/drive.mp4 --json out/frametimes.json \
+              --baseline-pct "$CTL" | tee out/frametimes.txt
+            APP=$(python3 -c "import json;print(json.load(open('out/frametimes.json'))['dropped_frame_pct'])")
+            VERDICT=$(python3 -c "import json;print(json.load(open('out/frametimes.json'))['verdict'])")
             {
               echo "### The control (Apple's Settings, same runner, same gestures)"
               echo '```json'
               cat out/control-frametimes.json
               echo '```'
               echo
-              echo "**App ${APP}% dropped vs control ${CTL}% dropped.**"
+              echo "**App ${APP}% dropped vs control ${CTL}% dropped — ${VERDICT}.**"
               echo
               echo "If those are close, the rate is this runner's software"
               echo "rasteriser and not the app, and chasing it in the app's"
               echo "views is wasted effort. If the control is clean and the app"
               echo "is not, the app owns its jank."
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "--- app ${APP}% dropped vs control ${CTL}% dropped ---"
+            echo "--- app ${APP}% dropped vs control ${CTL}% dropped -- ${VERDICT} ---"
           else
             echo "no control recording -- the app's number has no baseline this run" \
               >> "$GITHUB_STEP_SUMMARY"

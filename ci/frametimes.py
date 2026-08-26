@@ -221,6 +221,12 @@ def main() -> int:
         help="an interval counts as late past this many budgets; the default "
         "sits far outside the recorder's timestamp jitter",
     )
+    ap.add_argument(
+        "--baseline-pct",
+        type=float,
+        help="dropped_frame_pct measured on a known-good control on the same "
+        "machine; the verdict is judged against this instead of against zero",
+    )
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
 
@@ -252,6 +258,26 @@ def main() -> int:
             "a floor on jank, not a ceiling: it cannot say why a frame was late",
         ],
     }
+
+    # A verdict against zero is meaningless when the machine itself cannot hold
+    # 60fps. Given what a known-good control scored on the same runner, say
+    # where this sits relative to that floor instead of relative to perfection.
+    if args.baseline_pct is not None:
+        base = args.baseline_pct
+        app_pct = report["dropped_frame_pct"]
+        report["baseline_pct"] = base
+        report["vs_baseline"] = round(app_pct - base, 2)
+        report["verdict"] = (
+            "at or below the floor" if app_pct <= base + 2
+            else "above the floor" if app_pct <= base * 1.5
+            else "well above the floor"
+        )
+        report["caveats"] = [
+            f"judged against a control that scored {base}% on this machine, "
+            "not against zero",
+            "at or below the floor means this measurement cannot indict the "
+            "app; it does not mean the app is smooth on real hardware",
+        ]
 
     print(json.dumps(report, indent=2))
     if args.json_out:

@@ -243,29 +243,54 @@ final class DriveTests: XCTestCase {
         // Naming a specific agent was never worth anything here: any row opens
         // a channel, and which agent it belongs to changes nothing downstream.
         // So take the first full-width row lying wholly inside the window.
-        if let target = visibleRow(app) {
-            mark("  tapping visible row: \(target.label.prefix(28))")
-            target.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        } else {
-            mark("  no row lies fully on screen; tapping mid-list by coordinate")
-            logTree(app, name: "no-visible-row")
-            at(0.5, 0.44).tap()
+        // Two taps are allowed, and which one works is itself the finding.
+        //
+        // `endTap`'s first branch: a tap while any row is still swiped open
+        // closes that row and returns without navigating. That is standard iOS
+        // behaviour, not a defect. The swipe steps above are meant to leave
+        // nothing open, and whether they do turns on the release velocity of
+        // "close it again" landing `.closed` rather than `.openRight`. Running
+        // `swipeOutcome` by hand on that drag puts it either side of the line
+        // depending on what velocity survives a 0.2 s hold -- x settles at
+        // +53.6 against an openRight threshold of 118 * 0.62 = 73.2, so it
+        // closes at rest and opens at any residual push.
+        //
+        // Rather than assume which, tap, look, and report. A channel that needs
+        // a second tap means the first was eaten closing a row, and that is
+        // worth a line in the log instead of a red run.
+        var opened = false
+        for attempt in 1...2 {
+            if let target = visibleRow(app) {
+                mark("  tap \(attempt): visible row \(target.label.prefix(28))")
+                target.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            } else {
+                mark("  tap \(attempt): no row lies fully on screen; using a coordinate")
+                logTree(app, name: "no-visible-row-\(attempt)")
+                at(0.5, 0.44).tap()
+            }
+            settle(2.0)
+            if app.buttons["route-chip"].waitForExistence(timeout: 4) {
+                opened = true
+                if attempt == 2 {
+                    mark("  channel opened on the SECOND tap -- the first was consumed closing a swiped row")
+                }
+                break
+            }
+            mark("  tap \(attempt) opened nothing")
         }
-        settle(2.0)
         attachTree(app, name: "channel-tree")
         attachShot("channel-shot")
 
-        // One check, at the point the failure actually happens. `route-chip` is
-        // the channel's own chrome, so its absence means no channel -- and it
-        // is the element every map step below needs anyway.
-        guard app.buttons["route-chip"].waitForExistence(timeout: 5) else {
-            mark("  NO CHANNEL -- the tap did not open one; thread and map steps skipped")
+        // `route-chip` is the channel's own chrome, so its absence means no
+        // channel -- and it is the element every map step below needs anyway.
+        guard opened else {
+            mark("  NO CHANNEL after two taps -- thread and map steps skipped")
             // Printed, not only attached. The .xcresult needs a Mac to open and
             // this project is driven from Linux, so a tree that exists only
             // inside the bundle is a tree nobody reads -- which is how the
-            // is-it-hittable question stayed open across three runs.
+            // row-frame question stayed open across three runs.
             logTree(app, name: "channel-tree-never-opened")
-            XCTFail("channel did not open; every step after the row tap would have run against the fleet")
+            XCTFail("channel did not open on either tap; every step after this would have run against the fleet")
             return
         }
         mark("  channel is open")
