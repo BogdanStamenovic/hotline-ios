@@ -28,6 +28,8 @@ struct ControlSheet: View {
     let onDispatch: (Capability) -> Void
     let onRetask: (String, Bool) -> Void
     let onKill: () -> Void
+    let onRetire: (Bool) -> Void
+    let onPurge: () -> Void
     let onDrag: (SheetPhase) -> Void
 
     @State private var retasking = false
@@ -100,6 +102,8 @@ struct ControlSheet: View {
             }
 
             if retasking { retaskForm }
+
+            retention
 
             Color.clear.frame(height: 28)
         }
@@ -261,6 +265,55 @@ struct ControlSheet: View {
     private var stopReason: String? {
         guard let stop = stopCapability else { return "archserver does not offer Stop here." }
         return stop.refusal
+    }
+
+    // MARK: - Retention
+    //
+    // Two operations, not five, and they look nothing alike (APP-PLAN 8).
+
+    private var retention: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle().fill(Theme.line).frame(height: 1)
+
+            // **Retire is reversible and destroys nothing**, so it is a plain
+            // toggle in ordinary ink with no confirmation. Nothing about it is
+            // styled as destructive: dressing it up would make the two
+            // operations read as two strengths of the same thing, which is
+            // exactly what SERVER-PLAN §3 says the surface must not do.
+            Toggle(isOn: Binding(get: { !agent.isRetired },
+                                 set: { onRetire(!$0) })) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Show in fleet")
+                        .text(.rowName)
+                        .foregroundStyle(Theme.ink)
+                    Text("Retired agents move to their own section. They keep running; you just stop seeing them.")
+                        .text(.rowSubtitle)
+                        .foregroundStyle(Theme.ink3)
+                }
+            }
+            .tint(Theme.ink)
+            .padding(.horizontal, Theme.edge)
+            .padding(.vertical, 14)
+
+            Rectangle().fill(Theme.line).frame(height: 1)
+
+            Button(action: onPurge) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Delete history…")
+                        .text(.rowName)
+                        .foregroundStyle(Theme.sig)
+                    Text("Deletes it on archserver. The count comes first, and it cannot be undone.")
+                        .text(.rowSubtitle)
+                        .foregroundStyle(Theme.ink3)
+                }
+                .padding(.horizontal, Theme.edge)
+                .padding(.vertical, 14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.top, agent.capabilities.isEmpty ? 0 : 4)
     }
 
     // MARK: - The grabber

@@ -95,7 +95,16 @@ private struct SetupView: View {
 struct SettingsSheet: View {
     @Environment(Server.self) private var server
     @Environment(\.dismiss) private var dismiss
+    /// Whether any open session reports its context use. It decides one
+    /// sentence, and that sentence is the whole reason APP-PLAN 5.6 asked the
+    /// server for a boolean.
+    let contextReported: Bool
+    let onFreeUpSpace: () async -> Void
+    let onMeasure: () async -> Int
+
     @State private var typed = ""
+    @State private var bytes: Int?
+    @State private var clearing = false
 
     var body: some View {
         NavigationStack {
@@ -105,6 +114,50 @@ struct SettingsSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                }
+
+                // **Nowhere near the purge control, and in ordinary ink rather
+                // than `sig`, because it is not destruction.** The label says
+                // what it does in its own words.
+                Section {
+                    Button {
+                        clearing = true
+                        Task {
+                            await onFreeUpSpace()
+                            bytes = await onMeasure()
+                            clearing = false
+                        }
+                    } label: {
+                        HStack {
+                            Text("Free up space")
+                            Spacer()
+                            Text(clearing ? "…" : (bytes.map(bytesLabel) ?? "—"))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .disabled(clearing || (bytes ?? 0) == 0)
+                } header: {
+                    Text("This phone")
+                } footer: {
+                    Text("Clears the copy on this phone. Nothing on archserver is deleted; "
+                         + "the app re-downloads what it needs.")
+                }
+
+                Section {
+                    if !contextReported {
+                        // The permanent case, said once, in words. Without it an
+                        // absent gauge is indistinguishable from a broken one.
+                        Text("Context use: not reported for this session.")
+                    } else {
+                        Text("Context use: reported.")
+                    }
+                } header: {
+                    Text("Diagnostics")
+                } footer: {
+                    Text("The context gauge needs hotline's statusLine wrapper installed for a "
+                         + "session. When it is not, the strip lays out with three cells and no "
+                         + "bar — the reading is missing, not zero.")
                 }
             }
             .navigationTitle("Server")
@@ -119,6 +172,7 @@ struct SettingsSheet: View {
                 }
             }
             .onAppear { typed = server.address }
+            .task { bytes = await onMeasure() }
         }
     }
 }
