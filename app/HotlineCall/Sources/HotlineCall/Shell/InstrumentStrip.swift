@@ -188,14 +188,6 @@ struct InstrumentStrip: View {
 
 }
 
-/// Tabular, and it does not round up into a lie.
-nonisolated func hotlineClock(_ seconds: Double) -> String {
-    let total = Int(max(0, seconds))
-    return total >= 3600
-        ? String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
-        : String(format: "%d:%02d", total / 60, total % 60)
-}
-
 // MARK: - The sparkline and its window
 
 /// 342x30 visually, 342x44 to the finger, so the drag does not compete with the
