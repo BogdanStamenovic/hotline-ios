@@ -62,19 +62,64 @@ the same mismatch one layer down and they all vanish with the right toolchain.
 
   Editing an existing file is fine: incremental works and is about a second.
 
-## Verifying wire types without a phone
+## Verifying without a phone -- `app/wiretest/run.sh`
 
-The types in `Sources/HotlineCall/Wire/Wire.swift` import only Foundation, so
-they compile and run natively on Linux with the same toolchain. That is the
-only way to actually execute any of this app's code on this box, and it is
-enough to prove the decoders against the bytes archserver really sends:
+There is no Mac, no simulator and no way to execute SwiftUI here. But
+`Wire/Wire.swift`, `Wire/Rules.swift` and `Store/SampleRing.swift` import only
+Foundation, so they compile and **run** natively on Linux with the same
+toolchain. That is the only executable verification this box has, so as much
+decision-making as possible is deliberately kept in those three files:
 
-    source /mnt/iosbuild/env62.sh
-    curl -s -X POST -d '{}' http://<archserver>:8789/api/v1/agents > live-agents.json
-    swiftc -swift-version 6 main.swift Wire.swift -o wiretest && ./wiretest
+    app/wiretest/run.sh                  # against the checked-in fixtures
+    app/wiretest/run.sh 100.72.2.62      # refresh the fixtures from a live daemon first
 
-Worth doing after any wire change. It caught nothing this time, which is the
-point: the graceful-degradation claims are tested rather than asserted.
+90 checks as of step 6. Two halves, and both matter:
+
+- **The bytes the live daemon really sends today** -- old code, no `state`, no
+  `vitals`, no `controls`, no `roster-events`. This is what proves the
+  graceful-degradation claims rather than asserting them: an absent `Vitals`
+  renders no cell, an absent capability list renders no controls, an absent
+  timestamp renders no relative time.
+- **The full contract the server is landing now** -- `vitals`,
+  `contextAvailable`, `declaredAt`, `duration_ms`, `client_token`,
+  `historyGeneration`, `controls` including a disabled one and an `id` this
+  build cannot dispatch. Written from `SERVER-PLAN.md` §6 and §9 rather than
+  from a running server, so the app is tested against the contract before the
+  contract arrives.
+
+It also executes the two rules that are easiest to get quietly wrong and
+impossible to see in a build log: `reconciled(_:in:)`, which is the whole of
+bug 3's fix, and every readout's formatting -- including that a compaction with
+no numbers renders *no* numbers rather than "in 0s".
+
+**`run.sh` deletes the built binary before compiling.** A stale binary from a
+previous run, passing its own older assertions, is the same
+green-check-that-measured-nothing as the cached build plan below. It has
+already happened once here.
+
+## Resources -- the ipa carries a bundle now
+
+Geist is bundled (`APP-PLAN.md` §12.4), so `Package.swift` declares
+`resources: [.process("Resources")]` and the archive gains a nested bundle:
+
+    Payload/HotlineCall.app/HotlineCall_HotlineCall.bundle/Geist-{Regular,Medium,SemiBold,Bold}.ttf
+    Payload/HotlineCall.app/HotlineCall_HotlineCall.bundle/OFL.txt
+
+**Verify it by listing the archive, not by a clean build** -- a build that
+silently drops a resource looks identical to one that carries it:
+
+    unzip -l xtool/HotlineCall.ipa
+
+Two things worth knowing about that path. SwiftPM's generated `Bundle.module`
+accessor is deliberately **not** used: it ends in
+`fatalError("could not load resource bundle")`, so a packaging failure would
+take the app down at launch instead of falling back to SF. `Theme/Fonts.swift`
+resolves the bundle by name and degrades. And the faces are named outright
+(`Geist-SemiBold`) rather than selected by weight trait, because weight
+resolution cannot be tested here and picking the wrong instance is a silent
+failure.
+
+`Theme.family = nil` is still the one-line fallback to SF.
 
 ## Isolation, since the module is main-actor-by-default
 

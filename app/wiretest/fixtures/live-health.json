@@ -1,0 +1,1 @@
+{"ok": true, "fake": false, "ring_ready": true, "uptime_seconds": 10772.7, "transport": "sip+confirmed", "rings_when_closed": true, "transports_available": ["sip"], "active_calls": 0, "conversations_held": 0, "degradations": []}
