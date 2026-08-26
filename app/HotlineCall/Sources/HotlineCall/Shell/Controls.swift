@@ -109,6 +109,7 @@ struct ControlSheet: View {
 
     @ViewBuilder
     private func row(_ capability: Capability) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
         Button {
             act(capability)
         } label: {
@@ -150,14 +151,16 @@ struct ControlSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .overlay(alignment: .bottom) {
-            // Kill is the one control a tap cannot commit. It has to be held,
-            // and the hold is the confirmation.
-            if capability.id == "kill", capability.usable {
-                HoldToFill(label: capability.label, act: onKill)
-                    .padding(.horizontal, Theme.edge)
-                    .padding(.bottom, 10)
-            }
+
+        // Kill is the one control a tap cannot commit: it has to be held, and
+        // the hold *is* the confirmation. It sits under its own row rather than
+        // over it, because a bar drawn on top of the label it confirms is a bar
+        // you cannot read while you are holding it.
+        if capability.id == "kill", capability.usable {
+            HoldToFill(label: capability.label, act: onKill)
+                .padding(.horizontal, Theme.edge)
+                .padding(.bottom, 14)
+        }
         }
     }
 

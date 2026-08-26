@@ -405,29 +405,6 @@ struct Shell: View {
     }
 }
 
-/// `48k -> 4.1k in 71s`, formatted to one decimal below 10 k and integer above.
-/// Every number in it is one the server measured.
-nonisolated func compactSentence(_ result: CompactResult) -> String {
-    guard result.compacted else {
-        // Whatever the server said went wrong, verbatim.
-        return result.detail ?? "Compaction did not run."
-    }
-    var parts = "Compacted"
-    if let before = result.preTokens, let after = result.postTokens {
-        parts += " — \(tokens(before)) → \(tokens(after))"
-    }
-    if let ms = result.durationMs {
-        parts += " in \(ms / 1000)s"
-    }
-    if !result.resumed { parts += " — not resumed" }
-    return parts
-}
-
-private nonisolated func tokens(_ count: Int) -> String {
-    let thousands = Double(count) / 1000
-    return thousands < 10 ? String(format: "%.1fk", thousands) : "\(Int(thousands))k"
-}
-
 /// What the left-edge recognizer is telling `Shell`. An enum rather than three
 /// closures so a phase cannot be handled in one place and forgotten in another.
 enum ScrubPhase {

@@ -35,7 +35,7 @@ struct ChannelLayer: View {
                                onRetry: { channel.retry($0) },
                                onContinue: onContinue)
                         .frame(maxHeight: .infinity)
-                    Composer(answering: agent.isBlocked) { channel.send($0) }
+                    Composer(answering: channel.answering != nil) { channel.send($0) }
                         .staged(.composer, nav, mo)
                 }
 
