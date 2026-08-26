@@ -277,12 +277,25 @@ jobs:
           # only failed in one of them.
           python3 ci/frametimes.py --self-test
 
-          python3 ci/frametimes.py out/drive.mp4 --json out/frametimes.json | tee out/frametimes.txt
-
+          # Control first: the app's number is judged against the floor this
+          # machine actually has, so the floor has to be measured before the
+          # app is scored. Emitting the app's summary before that re-score is
+          # how run 33015245379 printed `verdict: hitchy` directly above a line
+          # reading "at or below the floor" -- one report contradicting itself
+          # is how the original misreading happened in the first place.
           if [ -s out/control.mp4 ]; then
             python3 ci/frametimes.py out/control.mp4 --json out/control-frametimes.json \
               | tee out/control-frametimes.txt
+            CTL=$(python3 -c "import json;print(json.load(open('out/control-frametimes.json'))['dropped_frame_pct'])")
+            python3 ci/frametimes.py out/drive.mp4 --json out/frametimes.json \
+              --baseline-pct "$CTL" | tee out/frametimes.txt
+          else
+            CTL=""
+            python3 ci/frametimes.py out/drive.mp4 --json out/frametimes.json | tee out/frametimes.txt
           fi
+
+          APP=$(python3 -c "import json;print(json.load(open('out/frametimes.json'))['dropped_frame_pct'])")
+          VERDICT=$(python3 -c "import json;print(json.load(open('out/frametimes.json'))['verdict'])")
 
           {
             echo "## Frame timings"
@@ -299,14 +312,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ -s out/control-frametimes.json ]; then
-            CTL=$(python3 -c "import json;print(json.load(open('out/control-frametimes.json'))['dropped_frame_pct'])")
-            # Re-score the app against the floor the control just measured,
-            # rather than against a 60fps ideal this runner cannot reach.
-            python3 ci/frametimes.py out/drive.mp4 --json out/frametimes.json \
-              --baseline-pct "$CTL" | tee out/frametimes.txt
-            APP=$(python3 -c "import json;print(json.load(open('out/frametimes.json'))['dropped_frame_pct'])")
-            VERDICT=$(python3 -c "import json;print(json.load(open('out/frametimes.json'))['verdict'])")
+          if [ -n "$CTL" ]; then
             {
               echo "### The control (Apple's Settings, same runner, same gestures)"
               echo '```json'
@@ -315,10 +321,11 @@ jobs:
               echo
               echo "**App ${APP}% dropped vs control ${CTL}% dropped — ${VERDICT}.**"
               echo
-              echo "If those are close, the rate is this runner's software"
-              echo "rasteriser and not the app, and chasing it in the app's"
-              echo "views is wasted effort. If the control is clean and the app"
-              echo "is not, the app owns its jank."
+              echo "Settings is UIScrollView-backed and smooth on real hardware,"
+              echo "so what it drops here is the runner's software rasteriser."
+              echo "An app at or below that floor cannot be convicted by this"
+              echo "measurement -- which is not the same as being smooth on a"
+              echo "real phone, and this instrument cannot speak to that."
             } >> "$GITHUB_STEP_SUMMARY"
             echo "--- app ${APP}% dropped vs control ${CTL}% dropped -- ${VERDICT} ---"
           else
