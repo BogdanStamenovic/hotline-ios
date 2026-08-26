@@ -176,6 +176,15 @@ nonisolated struct Moment: Identifiable, Hashable, Sendable, Codable {
         case summary
         case state
         case error
+        /// A phase opened. `text` is its title, frozen at open; `phase` is the
+        /// id every tool call in that leg carries.
+        case phase
+        /// A phase closed. `text` is its outcome, `phase` the leg it closes.
+        case outcome
+        /// The transcript's own `compact_boundary` record, already rendered to
+        /// a sentence by the server out of real `pre_tokens` / `post_tokens` /
+        /// `duration_ms`. It is the map's compaction marker.
+        case compact
 
         init(from decoder: any Decoder) throws {
             let raw = try decoder.singleValueContainer().decode(String.self)

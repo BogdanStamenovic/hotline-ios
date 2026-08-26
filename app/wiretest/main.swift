@@ -359,5 +359,305 @@ let lines = torn.split(separator: "\n").compactMap {
 check(lines.count == 1, "a torn last line is dropped and the rest of the segment still reads")
 
 // ---------------------------------------------------------------------------
+section("the motion scalars (Theme/Scalars.swift)")
+
+check(win(0, 0.3, 0.4) == 0 && win(1, 0.3, 0.4) == 1, "a window is closed before its start and open after its span")
+check(abs(win(0.5, 0.3, 0.4) - 0.5) < 1e-12, "and smoothstep is symmetric about its midpoint")
+check(win(0.31, 0.3, 0.4) < 0.01, "it eases in rather than starting linearly")
+check(project(1000) == 499, "the fling projection is the system's own exponential decay")
+
+// The one that fails silently: a drag beginning on an already-banded surface
+// resumes from the finger-space value, and a step under the thumb is the bug.
+for over in [12.0, 90.0, 300.0] {
+    let banded = rubber(over, 800, 0.62)
+    check(abs(unrubber(banded, 800, 0.62) - over) < 1e-6,
+          "rubber/unrubber round-trips at \(Int(over)) pt over, so a re-grab has no step")
+    check(banded < over, "and the band always resists (\(Int(over)) pt in, \(Int(banded)) pt out)")
+}
+check(rubber(1e9, 800, 0.62) < 800, "no finger travel can pull the surface off the screen")
+
+check(focusBand(top: 170) == 1, "a phase sitting in the focus band is fully open")
+check(focusBand(top: 170 + 210) == 0 && focusBand(top: -1000) == 0,
+      "and one 210 pt away, either side, is fully closed")
+check(abs(focusBand(top: 275) - 0.5) < 1e-12, "halfway out is half open")
+check(toolStagger(0.5, 0) > toolStagger(0.5, 4), "tool rows stagger outward from the first")
+// APP-PLAN 6.2's `clamp((on - k*0.055)/0.6, 0, 1)` reaches 1 only up to k = 7.
+// That is the spec's own arithmetic, and it is recorded rather than "fixed":
+// past the eighth row a phase's tail stays slightly indented and slightly faded
+// even at full focus, which reads as depth rather than as a bug.
+check((0...7).allSatisfy { toolStagger(1, $0) == 1 }, "a fully open phase resolves the first eight rows")
+check(toolStagger(1, 8) < 1 && toolStagger(1, 8) > 0.8,
+      "and leaves the ninth and beyond fractionally short, by the spec's own numbers")
+check(toolStagger(0, 0) == 0, "a closed phase opens none of them")
+
+// ---------------------------------------------------------------------------
+section("the route, rebuilt from the events the daemon really sends")
+
+// Captured from 100.72.2.62:8789 on 2026-08-26. The point of asserting against
+// the real bytes rather than a hand-written page: the contract in SERVER-PLAN
+// §6 and APP-PLAN §6.2 says phases arrive as records on the history page, and
+// this daemon does not send that key at all.
+do {
+    let page = try decoder.decode(HistoryPage.self, from: load("live-history.json"))
+    check(page.agent == "hotline-80", "the live history page names its agent")
+    check(page.phases == nil,
+          "**the deployed daemon sends NO `phases` key** -- the route has to come from the events")
+    check(!page.events.isEmpty, "and it does send events")
+
+    let kinds = Set(page.events.map(\.kind))
+    check(kinds.contains(.phase), "which include `phase` rows, decoded rather than swallowed as .summary")
+    check(kinds.contains(.outcome), "and `outcome` rows")
+    check(kinds.contains(.tool), "and tool rows")
+
+    let built = route(from: page.events)
+    check(!built.phases.isEmpty, "the route reconstructs \(built.phases.count) legs out of them")
+
+    // Nothing may be lost or duplicated: every tool row lands in exactly one
+    // place, a leg or the named unattributed bucket.
+    let toolRows = page.events.filter { $0.kind == .tool || $0.kind == .compact }
+    let placed = built.phases.flatMap(\.tools).count + built.unphased.count
+    check(placed == toolRows.count,
+          "every one of the \(toolRows.count) tool rows is placed exactly once, none invented")
+
+    let opened = Set(page.events.filter { $0.kind == .phase }.compactMap(\.phase))
+    let titled = built.phases.filter { $0.title != nil }.map(\.id)
+    check(Set(titled) == opened,
+          "a leg has a title exactly when its opening event was in the loaded page")
+    check(built.phases.allSatisfy { $0.title != nil || $0.startInferred },
+          "and an untitled leg is marked as inferred rather than pretending to a start time")
+
+    check(built.phases == built.phases.sorted { $0.startedAt < $1.startedAt },
+          "legs come back in time order whatever order the ids appeared in")
+
+    let closed = Set(page.events.filter { $0.kind == .outcome }.compactMap(\.phase))
+    check(Set(built.phases.filter { !$0.isOpen }.map(\.id)) == closed,
+          "a leg is closed exactly when an outcome row closed it -- an open one is not given an end")
+    check(built.phases.filter(\.isOpen).allSatisfy { $0.duration == nil },
+          "and an open leg has no duration, rather than one measured to 'now'")
+} catch {
+    check(false, "live history decodes: \(error)")
+}
+
+// The reconstruction's own edges, on bytes chosen to hit them.
+do {
+    let t = Date(timeIntervalSince1970: 1_787_000_000)
+    func at(_ offset: Double) -> Date { t.addingTimeInterval(offset) }
+    let events = [
+        // A page that begins mid-leg: tools whose opening event was never loaded.
+        Moment(seq: 1, kind: .tool, text: "a", tool: "Read", at: at(0), phase: "p0"),
+        Moment(seq: 2, kind: .phase, text: "Do the thing", at: at(10), phase: "p1"),
+        Moment(seq: 3, kind: .tool, text: "b", tool: "Bash", at: at(11), phase: "p1"),
+        Moment(seq: 4, kind: .tool, text: "c", tool: "Grep", at: at(12), viaSubagent: true, phase: "p1"),
+        Moment(seq: 5, kind: .compact, text: "compacted 48027 → 4070 tokens in 71.1s",
+               tool: "compact", at: at(13), phase: "p1"),
+        Moment(seq: 6, kind: .outcome, text: "Did the thing", at: at(20), phase: "p1"),
+        Moment(seq: 7, kind: .phase, text: "Next leg", at: at(21), phase: "p2"),
+        // Unattributable: the server could not place it.
+        Moment(seq: 8, kind: .tool, text: "d", tool: "Read", at: at(22)),
+    ]
+    let built = route(from: events)
+    check(built.phases.count == 3, "three legs: one inferred, two opened")
+    check(built.phases[0].id == "p0" && built.phases[0].title == nil,
+          "the leg the page begins inside has no title, because there is no honest one")
+    check(built.phases[0].startInferred, "and its start is marked inferred")
+    check(built.phases[1].title == "Do the thing", "the opening event's text is the title")
+    check(built.phases[1].outcome == "Did the thing", "the closing event's text is the outcome")
+    check(built.phases[1].duration == 10, "and the leg's duration is real, both ends measured")
+    check(built.phases[1].tools.count == 3, "its three rows nest under it, compaction included")
+    check(built.phases[1].tools.map(\.seq) == [3, 4, 5], "in the order the store handed them out")
+    check(built.phases[2].isOpen && built.phases[2].outcome == nil,
+          "the last leg is still open -- 'Route continues when you answer'")
+    check(built.unphased.map(\.seq) == [8],
+          "the row the server could not attribute is named, not filed into a phantom leg")
+    check(built.compactions.count == 1, "the compaction is listed for the waveform marker")
+    check(built.compactions[0].text.contains("48027"),
+          "carrying the transcript's own numbers, which the app never recomputes")
+
+    check(built.boundaries(since: t) == [0, 10, 20, 21],
+          "every boundary, sorted, is what a throw can snap to")
+    check(built.phase(at: at(15))?.id == "p1", "an instant inside a leg finds it")
+    check(built.phase(at: at(20.5)) == nil,
+          "and one in the gap between legs finds nothing, because that gap is real")
+    check(built.phase(at: at(5))?.id == "p0",
+          "the leg with no opening event still covers its own span")
+    check(built.end(of: 0) == at(10),
+          "**a leg that lost its outcome row stops where the next one starts**, not at the end of time")
+    check(built.end(of: 2) == nil, "and only the last leg is genuinely open-ended")
+    check(built.phase(at: at(3600))?.id == "p2", "which is why an instant long after it still lands there")
+
+    // A leg whose tools arrive before its opening event -- a page boundary
+    // landing between them, which is the case that quietly loses the title.
+    let outOfOrder = route(from: [
+        Moment(seq: 3, kind: .tool, text: "b", tool: "Bash", at: at(11), phase: "p1"),
+        Moment(seq: 2, kind: .phase, text: "Do the thing", at: at(10), phase: "p1"),
+    ])
+    check(outOfOrder.phases.count == 1 && outOfOrder.phases[0].title == "Do the thing",
+          "events are sorted by seq first, so the opening event still wins on the title")
+    check(outOfOrder.phases[0].startInferred == false,
+          "and the leg's start stops being inferred once its opening event lands")
+
+    // A daemon that DOES send phase records: they win, the nesting still comes
+    // from the events.
+    let declared = [Phase(id: "p1", title: "From the store", outcome: "stored",
+                          startedAt: t.timeIntervalSince1970 + 5, endedAt: nil)]
+    let merged = route(from: events, declared: declared)
+    check(merged.phases.first(where: { $0.id == "p1" })?.title == "Do the thing",
+          "an event-borne title still wins, because it is the same row the record was written from")
+    check(merged.phases.first(where: { $0.id == "p1" })?.tools.count == 3,
+          "and a phase record carries no tool calls, so the nesting is still the events'")
+
+    check(route(from: []).isEmpty, "no events is an empty route, not a fabricated one")
+}
+
+// ---------------------------------------------------------------------------
+section("scrub <-> timeline: the Driver enum makes the oscillation unspellable")
+
+var head = Playhead()
+check(head.driver == .neither && head.cursor == 0, "it starts owned by nobody")
+
+head.scrub(to: 40)
+check(head.driver == .strip && head.cursor == 40, "the strip's gesture takes the cursor")
+head.follow(90)
+check(head.cursor == 40, "**the timeline's write is refused while the strip owns it** -- no feedback loop")
+head.place(5)
+check(head.cursor == 40, "and so is a passive write")
+head.release()
+check(head.driver == .neither, "the gesture ending hands it back")
+
+head.follow(90)
+check(head.driver == .timeline && head.cursor == 90, "now the timeline owns it")
+head.scrub(to: 12)
+check(head.cursor == 90, "and the strip's write is refused, symmetrically -- 'and vice versa'")
+head.release()
+head.place(7)
+check(head.cursor == 7, "with nobody driving, a passive write lands")
+
+let bounds: [TimeInterval] = [0, 100, 260, 600]
+check(snapped(258, to: bounds, span: 600) == 260, "a throw ending 2 s from a boundary snaps to it")
+check(snapped(200, to: bounds, span: 600) == nil,
+      "one ending 60 s away does not -- the strip has to be parkable mid-phase")
+check(snapped(110, to: [0, 100, 118, 600], span: 600) == 118,
+      "and with two boundaries inside the tolerance, the nearer wins")
+check(snapped(258, to: [], span: 600) == nil, "no boundaries, no snap")
+check(snapped(258, to: bounds, span: 0) == nil, "a zero-length session cannot snap")
+
+check(toolTick(Moment(seq: 1, kind: .tool, text: "", tool: "Read", at: .now)) == .read, "Read -> read")
+check(toolTick(Moment(seq: 1, kind: .tool, text: "", tool: "Edit", at: .now)) == .edit, "Edit -> write")
+check(toolTick(Moment(seq: 1, kind: .tool, text: "", tool: "Bash", at: .now)) == .shell, "Bash -> shell")
+check(toolTick(Moment(seq: 1, kind: .tool, text: "", tool: "Task", at: .now)) == .signal, "Task -> delegate")
+check(toolTick(Moment(seq: 1, kind: .claude, text: "?", at: .now)) == .signal,
+      "and a block event shares that colour, because both are the agent leaving its thread")
+check(toolTick(Moment(seq: 1, kind: .tool, text: "", tool: "mcp__chrome__navigate", at: .now)) == .other,
+      "**an MCP tool lands in `other` rather than being silently mislabelled**")
+check(toolTick(Moment(seq: 1, kind: .tool, text: "", at: .now)) == .other, "and so does a tool with no name")
+
+// ---------------------------------------------------------------------------
+section("what the daemon sends TODAY (captured live, 2026-08-26)")
+
+do {
+    let page = try decoder.decode(AgentsPage.self, from: load("today-agents.json"))
+    check(!page.agents.isEmpty, "today's roster decodes: \(page.agents.count) agents")
+    check(page.agents.allSatisfy { !$0.capabilities.isEmpty },
+          "every row now declares controls, so the swipe and the sheet have something real to render")
+    check(page.agents.contains { $0.vitals != nil }, "and Vitals are on the wire")
+    check(page.agents.contains { $0.contextAvailable == true },
+          "with contextAvailable true somewhere -- the gauge's 'known'/'not yet' states are reachable")
+    check(page.agents.contains { $0.contextAvailable == false },
+          "and false somewhere -- so is 'unavailable', which renders no cell at all")
+    check(page.agents.contains { $0.presence == .done },
+          "the daemon reports `done` distinctly from `dead` (APP-PLAN 12.5), which is why the dot has five states")
+    check(page.agents.allSatisfy { $0.declaredAt != nil }, "declaredAt landed: the ELAPSED cell has a clock")
+    check(page.agents.allSatisfy { $0.generation == 0 },
+          "historyGeneration is 0 everywhere -- nothing has been purged, so nothing is invalidated")
+    let disabled = page.agents.flatMap(\.capabilities).filter { !$0.enabled }
+    check(!disabled.isEmpty && disabled.allSatisfy { $0.reason != nil },
+          "and every disabled control carries the server's own reason, which is what a tap surfaces")
+} catch {
+    check(false, "today's roster decodes: \(error)")
+}
+
+do {
+    let health = try decoder.decode(Health.self, from: load("today-health.json"))
+    check(health.globalControls?.contains { $0.id == "new" } == true,
+          "/health now declares `new`, so the pull past the bottom is not a dead end")
+    check(health.dbBytes != nil && health.diskFree != nil, "and db_bytes / disk_free reach Settings")
+} catch {
+    check(false, "today's health decodes: \(error)")
+}
+
+// ---------------------------------------------------------------------------
+section("purge: the dry run is the consent, and it is reconciled against it")
+
+do {
+    let counts = try decoder.decode(PurgeCounts.self, from: """
+    {"agent":"scratch","conversations":6,"events":340,"phases":4,
+     "oldest_at":1787000000.0,"dry_run":true}
+    """.data(using: .utf8)!)
+    check(counts.dryRun == true, "dry_run decodes from snake_case")
+    check(purgeSentence(counts) == "340 events, 6 conversations, 4 phases",
+          "the sheet's line is built from the real counts, never a generic warning")
+    check(counts.oldestAt != nil, "and it can say how far back it goes")
+
+    let same = try decoder.decode(PurgeCounts.self, from: """
+    {"agent":"scratch","conversations":6,"events":340,"phases":4,"dry_run":true}
+    """.data(using: .utf8)!)
+    check(sameConsent(counts, same), "a re-run that agrees is the same consent")
+
+    let moved = try decoder.decode(PurgeCounts.self, from: """
+    {"agent":"scratch","conversations":6,"events":361,"phases":4,"dry_run":true}
+    """.data(using: .utf8)!)
+    check(!sameConsent(counts, moved),
+          "**one that does not agree is NOT** -- consenting to stale counts is not consent")
+
+    let nothing = try decoder.decode(PurgeCounts.self, from: """
+    {"agent":"scratch","conversations":0,"events":0,"phases":0,"dry_run":true}
+    """.data(using: .utf8)!)
+    check(nothing.total == 0, "nothing to delete is a real answer")
+    check(purgeSentence(nothing) == "nothing to delete",
+          "and it says so rather than offering a hold that would destroy nothing")
+} catch {
+    check(false, "purge counts decode: \(error)")
+}
+
+check(bytesLabel(0) == "0 bytes", "an empty cache says so")
+check(bytesLabel(19_293_798) == "18.4 MB", "and 18.4 MB is the real figure, from a real walk")
+check(bytesLabel(940) == "940 bytes" && bytesLabel(20_480) == "20 KB", "with honest units below a megabyte")
+
+// ---------------------------------------------------------------------------
+section("the auto-open rule (APP-PLAN 12.2), as three conditions and no more")
+
+let now = Date(timeIntervalSince1970: 1_787_600_000)
+func agent(_ name: String, blocked: Bool) -> Agent {
+    // Decoding is the only initialiser Agent has, which is the point: the rule
+    // is tested against the same shape the wire produces.
+    try! decoder.decode(Agent.self, from: """
+    {"name":"\(name)","task":"t","cwd":"/w","live":true,"busy":false,
+     "state":"idle","blocked":\(blocked)}
+    """.data(using: .utf8)!)
+}
+let one = [agent("a", blocked: true), agent("b", blocked: false)]
+let two = [agent("a", blocked: true), agent("b", blocked: true)]
+let none = [agent("a", blocked: false)]
+
+check(autoOpen(in: one, launch: .cold, backedOutAt: [:], now: now) == "a",
+      "one blocked agent on a cold launch: open it, with the same transition a tap runs")
+check(autoOpen(in: two, launch: .cold, backedOutAt: [:], now: now) == nil,
+      "two blocked agents: stay on the list with them pinned -- picking one would be a guess")
+check(autoOpen(in: none, launch: .cold, backedOutAt: [:], now: now) == nil, "none blocked: nothing to open")
+check(autoOpen(in: one, launch: .resumed(after: 600), backedOutAt: [:], now: now) == "a",
+      "backgrounded 10 minutes counts as a fresh arrival")
+check(autoOpen(in: one, launch: .resumed(after: 120), backedOutAt: [:], now: now) == nil,
+      "backgrounded 2 minutes does not -- he never left")
+check(autoOpen(in: one, launch: .cold,
+               backedOutAt: ["a": now.addingTimeInterval(-30)], now: now) == nil,
+      "**and backing out of that channel 30 s ago vetoes it** -- he just said no")
+check(autoOpen(in: one, launch: .cold,
+               backedOutAt: ["a": now.addingTimeInterval(-90)], now: now) == "a",
+      "90 s ago does not veto it")
+check(autoOpen(in: one, launch: .cold,
+               backedOutAt: ["b": now.addingTimeInterval(-5)], now: now) == "a",
+      "and backing out of a DIFFERENT channel is not a veto at all")
+
+// ---------------------------------------------------------------------------
 print("\n\(checks - failures)/\(checks) checks passed")
 exit(failures == 0 ? 0 : 1)

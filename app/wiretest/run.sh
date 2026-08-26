@@ -42,6 +42,8 @@ swiftc -swift-version 6 \
     "$sources/Wire/Wire.swift" \
     "$sources/Wire/Rules.swift" \
     "$sources/Store/SampleRing.swift" \
+    "$sources/Store/Route.swift" \
+    "$sources/Theme/Scalars.swift" \
     -o "$out"
 
 "$out" "$here/fixtures"

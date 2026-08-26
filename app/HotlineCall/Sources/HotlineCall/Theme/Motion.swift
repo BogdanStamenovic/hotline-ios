@@ -1,54 +1,9 @@
 import SwiftUI
 
-// MARK: - Scalar helpers
-//
-// `nonisolated` throughout: `Shape.path(in:)` and `Animatable.animatableData`
-// are called off the main actor and every one of these is reachable from
-// there. They are pure functions of their arguments, so that is also simply
-// the truthful annotation.
-
-nonisolated func clamp(_ v: Double, _ lo: Double, _ hi: Double) -> Double {
-    min(max(v, lo), hi)
-}
-
-nonisolated func lerp(_ a: Double, _ b: Double, _ t: Double) -> Double {
-    a + (b - a) * t
-}
-
-/// A smoothstep window over the master progress value, ported verbatim from
-/// `v2-prime.html`.
-///
-/// The softening is per element. **The master `nav` stays linear**, which is
-/// what lets a drag-back track the finger 1:1 while every staged element still
-/// eases in and out of its own slot.
-nonisolated func win(_ e: Double, _ start: Double, _ span: Double) -> Double {
-    let t = clamp((e - start) / span, 0, 1)
-    return t * t * (3 - 2 * t)
-}
-
-/// iOS rubber-banding. `over` is how far past the edge, `dim` the dimension it
-/// is resisted against; the result asymptotes to `dim`, so no finger travel can
-/// pull the surface off the screen.
-nonisolated func rubber(_ over: Double, _ dim: Double, _ c: Double = 0.55) -> Double {
-    (over * dim * c) / (dim + c * abs(over))
-}
-
-/// The inverse of `rubber`, which exists for one reason: a drag that *begins*
-/// while the surface is already banded out must resume from the finger-space
-/// value, not band a banded number. Without it, grabbing a bouncing list puts a
-/// visible step under the thumb.
-nonisolated func unrubber(_ banded: Double, _ dim: Double, _ c: Double = 0.55) -> Double {
-    let b = abs(banded)
-    guard b < dim else { return banded }
-    return (banded < 0 ? -1 : 1) * (b * dim) / (c * (dim - b))
-}
-
-/// Where a fling is going, using the same exponential-decay projection the
-/// system uses for scroll deceleration -- so a throw here decides at the same
-/// threshold a throw anywhere else on the phone does.
-///
-/// `(v/1000) * 0.998 / (1 - 0.998)` = `v * 0.499`.
-nonisolated func project(_ velocity: Double) -> Double { velocity * 0.499 }
+// The scalar helpers this file used to hold -- `clamp`, `lerp`, `win`,
+// `rubber`, `unrubber`, `project` -- moved to `Theme/Scalars.swift` so they
+// import Foundation only and can be *executed* by `app/wiretest/run.sh` rather
+// than asserted. Nothing else about them changed.
 
 // MARK: - The springs
 //

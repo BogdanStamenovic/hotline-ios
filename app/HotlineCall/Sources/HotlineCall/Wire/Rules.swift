@@ -104,3 +104,83 @@ nonisolated func tokenCount(_ count: Int) -> String {
     let thousands = Double(count) / 1000
     return thousands < 10 ? String(format: "%.1fk", thousands) : "\(Int(thousands))k"
 }
+
+// MARK: - Deletion (APP-PLAN 8.2)
+
+nonisolated extension PurgeCounts {
+    var total: Int { conversations + events + phases }
+    var oldestDate: Date? { oldestAt.map { Date(timeIntervalSince1970: $0) } }
+}
+
+/// The count sheet's line. **Never a generic warning: the number is the
+/// consent**, so it is built from what the dry run actually returned and says
+/// so plainly when that is nothing.
+nonisolated func purgeSentence(_ counts: PurgeCounts) -> String {
+    guard counts.total > 0 else { return "nothing to delete" }
+    var parts: [String] = []
+    if counts.events > 0 { parts.append("\(counts.events) event\(counts.events == 1 ? "" : "s")") }
+    if counts.conversations > 0 {
+        parts.append("\(counts.conversations) conversation\(counts.conversations == 1 ? "" : "s")")
+    }
+    if counts.phases > 0 { parts.append("\(counts.phases) phase\(counts.phases == 1 ? "" : "s")") }
+    return parts.joined(separator: ", ")
+}
+
+/// Whether a re-run of the dry run still describes what he agreed to.
+///
+/// APP-PLAN 8.2 step 5: if the sheet has been open more than ten seconds the dry
+/// run is re-issued before the destructive call, because **consenting to stale
+/// counts is not consent.** `oldest_at` is deliberately not compared -- it moves
+/// as history rolls off and is context, not the quantity being destroyed.
+nonisolated func sameConsent(_ shown: PurgeCounts, _ fresh: PurgeCounts) -> Bool {
+    shown.events == fresh.events
+        && shown.conversations == fresh.conversations
+        && shown.phases == fresh.phases
+}
+
+/// "Free up space — 18.4 MB". A real figure from a real walk of the cache; the
+/// label says what it does in its own words and never in `sig`.
+nonisolated func bytesLabel(_ bytes: Int) -> String {
+    if bytes < 1024 { return "\(bytes) byte\(bytes == 1 ? "" : "s")" }
+    if bytes < 1024 * 1024 { return "\(Int((Double(bytes) / 1024).rounded())) KB" }
+    return String(format: "%.1f MB", Double(bytes) / (1024 * 1024))
+}
+
+// MARK: - The auto-open rule (APP-PLAN 12.2)
+
+/// How the app arrived at this launch. `resumed(after:)` carries seconds spent
+/// backgrounded, which is the only thing that distinguishes glancing away from
+/// coming back.
+nonisolated enum Launch: Sendable, Equatable {
+    case cold
+    case resumed(after: TimeInterval)
+}
+
+/// Which channel, if any, the app is allowed to open by itself.
+///
+/// Three conditions, and all three have to hold. Each one exists to stop a
+/// different way the app could move under him:
+///
+/// - **exactly one blocked agent.** Two or more and it stays on the list with
+///   them pinned, because picking one of them would be a guess dressed as a
+///   decision.
+/// - **cold, or backgrounded more than five minutes.** Glancing at a
+///   notification and coming straight back is not an arrival, and re-navigating
+///   him then is the app losing his place.
+/// - **he did not back out of that same channel in the last sixty seconds.**
+///   Backing out is him saying no; opening it again immediately is arguing.
+///
+/// The caller runs the *same* transition a tap runs -- the app performs the
+/// gesture rather than cutting to a screen, which is the difference between it
+/// feeling like it moved and it feeling like it lost his place.
+nonisolated func autoOpen(in agents: [Agent], launch: Launch,
+                          backedOutAt: [AgentID: Date], now: Date = .now) -> AgentID? {
+    switch launch {
+    case .cold: break
+    case .resumed(let seconds): guard seconds > 300 else { return nil }
+    }
+    let blocked = agents.filter { $0.isBlocked && !$0.isRetired }
+    guard blocked.count == 1, let target = blocked.first else { return nil }
+    if let left = backedOutAt[target.name], now.timeIntervalSince(left) < 60 { return nil }
+    return target.name
+}
