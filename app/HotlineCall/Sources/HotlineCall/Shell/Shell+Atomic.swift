@@ -46,7 +46,15 @@ extension Shell {
             }
 
             let quiet = reduceMotionValue
+            // APP-PLAN 9.8's table, in one place. Same sequence, same order,
+            // every directional transform stripped (that is `mo`), durations
+            // compressed ~2.5-3x, **and all stagger removed** -- so under Reduce
+            // Motion the three content tracks start together rather than 90 and
+            // 330 ms apart. What does not compress is the held beat.
             let scale = quiet ? 0.36 : 1.0
+            let wordDelay = quiet ? 0 : 90
+            let subDelay = quiet ? 0 : 240
+            let tail = quiet ? 220 : 500
 
             // t = preDelay. Flow A fires 60 ms before the option's zoom
             // finishes, so the rising wipe overtakes and buries its tail.
@@ -62,21 +70,21 @@ extension Shell {
 
             // +90 ms. The word runs to 330 ms *past* the wipe's own completion,
             // so it keeps settling while the card is already static.
-            try? await Task.sleep(for: .milliseconds(Int(90 * scale)))
+            try? await Task.sleep(for: .milliseconds(wordDelay))
             withAnimation(quiet ? .easeOut(duration: 0.22)
                                 : .timingCurve(0.16, 1, 0.3, 1, duration: 0.70)) {
                 wordIn = 1
             }
 
             // +240 ms. The headline commits; the receipt confirms after.
-            try? await Task.sleep(for: .milliseconds(Int(240 * scale)))
+            try? await Task.sleep(for: .milliseconds(subDelay))
             withAnimation(quiet ? .easeOut(duration: 0.22)
                                 : .timingCurve(0.23, 1, 0.32, 1, duration: 0.50)) {
                 subIn = 1
             }
 
             // Out to the end of the sub-line's own run.
-            try? await Task.sleep(for: .milliseconds(Int(500 * scale)))
+            try? await Task.sleep(for: .milliseconds(tail))
 
             // ---- THE HELD BEAT. Nothing moves. No animation is scheduled
             // inside this sleep, and nothing may ever be put in it.

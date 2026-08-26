@@ -234,7 +234,6 @@ struct AnswerCard: View {
 
     @State private var draft = ""
     @State private var drag: Double = 0
-    @State private var width: Double = 320
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Releasing past 0.62 x width, or with vx > 900 past 60 pt, commits.
@@ -280,7 +279,6 @@ struct AnswerCard: View {
                 .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius)
                     .stroke(Theme.sig20, lineWidth: 1))
         )
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         // `slamGo`: scale 1 -> 1.42 with a 6 pt lift, and **opacity never
         // drops** -- it grows and lifts, fully opaque, into the space the card
         // is about to bury.
