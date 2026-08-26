@@ -10,9 +10,20 @@ No Mac. Clean build is about 7 seconds.
 Result, verified by inspecting the file rather than trusting the exit code:
 
     Mach-O 64-bit arm64 executable  (magic 0xfeedfacf)
-    linked: SwiftUI, UIKit, Foundation, CoreFoundation, CoreGraphics
+    linked: SwiftUI, UIKit, Foundation, CoreFoundation, CoreGraphics,
+            CoreText, CoreHaptics
     bundle: dev.stamenovic.hotlinecall, MinimumOSVersion 18.0, iPhoneOS
-    3.1 MB ipa
+    9.7 MB ipa (unoptimised debug binary, plus a 510 KB font bundle)
+
+`CoreHaptics` arrived with step 9 and is the only framework the slam card
+needed. **`AVFoundation` and `AudioToolbox` are absent, and that is the check
+for the no-sound rule** -- not a code review, the linker:
+
+    strings -a Payload/HotlineCall.app/HotlineCall | grep -cE 'AVFoundation|AVAudio|AudioToolbox'
+    # -> 0
+
+The haptic engine additionally runs with `playsHapticsOnly = true`, so it
+cannot produce one even by accident.
 
 `MinimumOSVersion` is 18.0 since the redesign: his phone is on 18.7.8,
 there is no second device to support, and `onGeometryChange` -- iOS 18 --
@@ -73,7 +84,12 @@ decision-making as possible is deliberately kept in those three files:
     app/wiretest/run.sh                  # against the checked-in fixtures
     app/wiretest/run.sh 100.72.2.62      # refresh the fixtures from a live daemon first
 
-90 checks as of step 6. Two halves, and both matter:
+It compiles `Wire/Wire.swift`, `Wire/Rules.swift`, `Store/SampleRing.swift`,
+`Store/Route.swift` and `Theme/Scalars.swift`. **A file only joins that list by
+importing Foundation alone**, which is why as much decision-making as possible
+is deliberately pushed into those five.
+
+194 checks as of step 10, in five parts:
 
 - **The bytes the live daemon really sends today** -- old code, no `state`, no
   `vitals`, no `controls`, no `roster-events`. This is what proves the
@@ -87,10 +103,27 @@ decision-making as possible is deliberately kept in those three files:
   from a running server, so the app is tested against the contract before the
   contract arrives.
 
-It also executes the two rules that are easiest to get quietly wrong and
-impossible to see in a build log: `reconciled(_:in:)`, which is the whole of
-bug 3's fix, and every readout's formatting -- including that a compaction with
-no numbers renders *no* numbers rather than "in 0s".
+- **A history page captured from the live daemon today** (`live-history.json`),
+  which is what found the biggest plan defect: `/agents/history` sends **no
+  `phases` key at all**, so the map's route has to be reconstructed from the
+  event stream. The assertions are structural rather than hardcoded counts, so
+  refreshing the fixture does not silently turn them green.
+- **Today's roster and health** (`today-agents.json`, `today-health.json`),
+  which is where the full contract is checked against a server that now
+  actually implements it rather than against a written-down promise.
+
+It also executes the rules that are easiest to get quietly wrong and impossible
+to see in a build log: `reconciled(_:in:)`, which is the whole of bug 3's fix;
+every readout's formatting -- including that a compaction with no numbers
+renders *no* numbers rather than "in 0s"; `route(from:)`'s phase nesting, which
+must place every tool row exactly once and never invent a title; `Playhead`'s
+`Driver` arbitration, where a missing refusal is an oscillating map; the purge
+dry-run reconciliation, where a missing comparison is a deletion he consented
+to different numbers for; and the auto-open rule's three conditions.
+
+Since step 10 the motion scalars live in `Theme/Scalars.swift` for the same
+reason -- Foundation only, so `rubber`/`unrubber` round-trip, `win`'s
+smoothstep and the map's focus band are executed rather than eyeballed.
 
 **`run.sh` deletes the built binary before compiling.** A stale binary from a
 previous run, passing its own older assertions, is the same

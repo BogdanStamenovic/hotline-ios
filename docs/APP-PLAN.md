@@ -1973,3 +1973,72 @@ pass over every custom scroll surface, and the Instruments run that decides
 whether §3.2's `@concurrent` candidates are real.
 *Judge:* turn on Reduce Motion and use the app for five minutes. Nothing should
 be missing; everything should be quieter; the held beat should still be there.
+
+---
+
+## 14. What building steps 7–10 found wrong with this document
+
+Recorded here rather than silently worked around, because every one of them is
+a place where the plan and the daemon disagree and a later reader would
+otherwise re-derive the same surprise.
+
+### 14.1 The map's phases are not on the history page — §6.2 is wrong
+
+§6.2 says *"Phases from `POST /agents/history`'s phase records"*. There are
+none. `SERVER-PLAN.md` §6's own response column for that endpoint reads
+`{events, oldest_seq, newest_seq, has_more}` — it never promised them either —
+and `Service.history` returns exactly that plus `historyGeneration`. The daemon
+does keep a `phases` table with `title`, `outcome`, `started_at` and `ended_at`,
+and **no endpoint serves it.** Verified against `100.72.2.62:8789` on
+2026-08-26 and captured as `app/wiretest/fixtures/live-history.json`.
+
+What it sends instead is strictly more useful: the route inline in the event
+stream. A `kind: "phase"` row carries the leg's title and id, a `kind:
+"outcome"` row carries the closing line and the same id, and every `tool` and
+`compact` row is tagged with the id of the leg that was running — which is the
+*nesting* as well as the records. `Store/Route.swift` reconstructs from that,
+and still honours `HistoryPage.phases` if a daemon ever starts sending it.
+
+Consequence for the app: `Moment.Kind` grew `phase`, `outcome` and `compact`.
+Before this they all decoded as `.summary` and the route was invisible.
+
+### 14.2 There are no options on the wire — §9.5's Flow A cannot ship as written
+
+§9.5's answer pre-roll grows *the chosen option* while *its siblings* drop away,
+and the card's sub-line is *"the chosen option's own label"*. Nothing on this
+wire offers options. `/api/v1/conversations` carries `asked` as free text and
+nothing else, and no part of `server/` has a concept of offered choices.
+
+Rendering Approve/Hold buttons would fabricate a decision the agent never
+offered, which §9.1's rule forbids exactly as loudly as a fabricated readout.
+What ships: the answer card itself runs `slamGo`, `slamDrop` has nothing to drop
+and its 240 ms window is empty rather than faked, and the sub-line is **his own
+answer** — the true analogue of what he committed to. Every timing after t = 0
+is unchanged, including the 560 ms overtake, because the card fires on a clock
+rather than on the pre-roll finishing.
+
+### 14.3 A past blocked span has no source — §6.3's recorder is narrower
+
+§6.3 draws the blocked span from `conversations.waiting_since → answered`. The
+daemon's `/conversations` reports `answered` as a **boolean with no timestamp**,
+and holds the whole set in memory rather than in the store, so it does not
+survive a restart. A *past* blocked interval therefore has no source at all.
+
+The current one does — `blockedSince` on the roster — so the strip draws the
+block it can measure and draws no others. Inferring spans from the fact that an
+answer exists would be the same class of invention.
+
+### 14.4 The stagger in §6.2 does not resolve past the eighth tool row
+
+`q = clamp((on − k·0.055)/0.6, 0, 1)` reaches 1 only up to `k = 7`. At full
+focus the ninth row and beyond sit at ~0.84 — slightly indented and slightly
+faded, permanently. It reads as depth rather than as a bug, so the numbers are
+kept as written and the property is asserted in `app/wiretest/` so nobody
+"fixes" it into a flat list later.
+
+### 14.5 `include_done` / `include_retired` were never asked for
+
+§12.5 gives `done` its own dot and §8.1 gives retired agents their own section,
+and `/api/v1/agents` defaults both flags to `false` — so neither state could
+ever appear. The roster now requests both. This is a plan omission rather than a
+contradiction, but it made two decided features unreachable.
