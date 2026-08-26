@@ -585,8 +585,45 @@ do {
     check(false, "today's health decodes: \(error)")
 }
 
+do {
+    // The live feed, which is what a channel actually streams. Decoded rather
+    // than described, because a page that fails to decode is a channel that
+    // silently never fills.
+    let page = try decoder.decode(FeedPage.self, from: load("today-feed.json"))
+    check(page.agent == "hotline-80", "today's feed page names its agent")
+    check(!page.events.isEmpty, "and carries \(page.events.count) events")
+    check(page.cursor >= (page.events.last?.seq ?? 0), "its cursor is at or past the newest event")
+    check(page.events.allSatisfy { $0.kind != .summary },
+          "**every kind on it decodes to a real case** -- .summary is the unknown bucket, and nothing lands there")
+    check(page.events.contains { $0.kind == .tool },
+          "tool rows are there, so the tool dot has something exact to flash on")
+    check(page.events.allSatisfy { $0.durationMs == nil },
+          "and none of them carries duration_ms yet, so every tool row renders NO bar rather than a guess")
+    check(page.events.allSatisfy { !$0.viaSubagent },
+          "no viaSubagent rows in this slice either, so nothing is dimmed on a guess")
+} catch {
+    check(false, "today's feed decodes: \(error)")
+}
+
 // ---------------------------------------------------------------------------
 section("purge: the dry run is the consent, and it is reconciled against it")
+
+do {
+    // The exact bytes archserver answers a dry run with today. It carries three
+    // keys this build does not model (`scope`, `agent_removed`,
+    // `history_generation`); a decoder that choked on those would take the whole
+    // deletion surface down.
+    let live = try decoder.decode(PurgeCounts.self, from: load("today-purge-dryrun.json"))
+    check(live.agent == "hotline-80", "a live dry run decodes")
+    check(live.dryRun == true, "and says it was one")
+    check(live.total == live.events + live.conversations + live.phases,
+          "its total is the sum of what it actually reported")
+    check(!purgeSentence(live).isEmpty, "and the sheet has a real sentence to show")
+    check(purgeSentence(live) != "nothing to delete" || live.total == 0,
+          "which says 'nothing to delete' only when there is nothing")
+} catch {
+    check(false, "live purge dry run decodes: \(error)")
+}
 
 do {
     let counts = try decoder.decode(PurgeCounts.self, from: """

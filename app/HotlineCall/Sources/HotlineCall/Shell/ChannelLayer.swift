@@ -45,7 +45,7 @@ struct ChannelLayer: View {
                 Theme.bg.ignoresSafeArea()
 
                 VStack(alignment: .leading, spacing: 0) {
-                    header
+                    header(viewport: geo.size.height)
                     ThreadView(channel: channel, nav: nav, mo: mo, cut: arrival,
                                onRetry: { channel.retry($0) },
                                onContinue: onContinue)
@@ -111,7 +111,7 @@ struct ChannelLayer: View {
 
     // MARK: - Header
 
-    private var header: some View {
+    private func header(viewport: Double) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // The hero's destination. Its opacity is a hard swap at e > 0.88,
             // where the travelling copy hides -- one object arriving, not two
@@ -139,13 +139,12 @@ struct ChannelLayer: View {
                     .gesture(
                         DragGesture(minimumDistance: 6)
                             .onChanged { value in
-                                let height = max(UIScreen.main.bounds.height, 1)
-                                onMapDrag(.move(clamp(value.translation.height / height * 1.35,
-                                                      0, 1)))
+                                onMapDrag(.move(clamp(value.translation.height
+                                                      / max(viewport, 1) * 1.35, 0, 1)))
                             }
                             .onEnded { value in
-                                let height = max(UIScreen.main.bounds.height, 1)
-                                onMapDrag(.release(value.velocity.height / height * 1.35))
+                                onMapDrag(.release(value.velocity.height
+                                                   / max(viewport, 1) * 1.35))
                             }
                     )
                     .accessibilityAddTraits(.isButton)

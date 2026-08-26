@@ -114,8 +114,9 @@ struct MapLayer: View {
                 .padding(.leading, Theme.edge + 5)
                 .allowsHitTesting(false)
 
+            let tops = column
             ForEach(Array(route.phases.enumerated()), id: \.element.id) { index, phase in
-                let top = rowTop(index) + scroll
+                let top = tops[index] + scroll
                 PhaseRow(phase: phase, index: index, count: route.phases.count,
                          on: focusBand(top: top, band: Self.band),
                          appear: smoothstep(clamp((reveal - Double(index) * 0.10) / 0.5, 0, 1)),
@@ -129,7 +130,7 @@ struct MapLayer: View {
                     unphased: route.unphased.count,
                     empty: route.isEmpty)
                 .frame(width: size.width - Theme.edge * 2, alignment: .leading)
-                .offset(x: Theme.edge, y: rowTop(route.phases.count) + scroll)
+                .offset(x: Theme.edge, y: (tops.last ?? Self.leadIn) + scroll)
                 .opacity(reveal)
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
@@ -142,26 +143,33 @@ struct MapLayer: View {
         .onChange(of: head.cursor) { _, cursor in follow(cursor) }
     }
 
-    /// Where a phase's row starts, tools included. The lead-in is what lets the
-    /// first phase reach the band.
-    private func rowTop(_ index: Int) -> Double {
-        var y = Self.leadIn
-        for i in 0..<min(index, route.phases.count) {
-            y += Self.phaseRow + openHeight(i)
-        }
-        return y
-    }
-
-    /// **Written only when the rounded value changes.** Height is the one
-    /// non-compositor property on this screen -- there is no transform
+    /// Every phase's top, computed once, top-down.
+    ///
+    /// A phase's height depends on how open it is, and how open it is depends on
+    /// where its top has landed -- so the two are genuinely mutually recursive.
+    /// Written as two functions calling each other it is **exponential**, not
+    /// quadratic: `rowTop(n)` asks `openHeight(n-1)` which asks `rowTop(n-1)`
+    /// and so on, and twenty phases is a million calls per frame. Walking the
+    /// column once, downward, is the same arithmetic in O(n) because each top
+    /// only ever depends on the ones above it.
+    ///
+    /// **The height is written only when the rounded value changes.** Height is
+    /// the one non-compositor property on this screen -- there is no transform
     /// equivalent for a list closing a gap -- so it is not written per frame.
-    private func openHeight(_ index: Int) -> Double {
-        let on = focusBand(top: rowTop(index) + scroll, band: Self.band)
-        return (on * Double(route.phases[index].tools.count) * Self.toolRow + 2).rounded()
+    private var column: [Double] {
+        var tops: [Double] = []
+        var y = Self.leadIn
+        for phase in route.phases {
+            tops.append(y)
+            let on = focusBand(top: y + scroll, band: Self.band)
+            y += Self.phaseRow + (on * Double(phase.tools.count) * Self.toolRow + 2).rounded()
+        }
+        tops.append(y)
+        return tops
     }
 
     private var contentHeight: Double {
-        rowTop(route.phases.count) + Self.runOut
+        (column.last ?? Self.leadIn) + Self.runOut
     }
 
     // MARK: - Scrubbing the timeline
@@ -193,10 +201,11 @@ struct MapLayer: View {
 
     private func nearestPhase(to landing: Double) -> Double? {
         guard !route.phases.isEmpty else { return nil }
+        let tops = column
         var best: Double?
         var gap = Double.greatestFiniteMagnitude
         for index in route.phases.indices {
-            let target = Self.band - rowTop(index)
+            let target = Self.band - tops[index]
             let distance = abs(target - landing)
             if distance < gap { gap = distance; best = target }
         }
@@ -225,8 +234,9 @@ struct MapLayer: View {
     private func cursor(forScroll value: Double) -> TimeInterval {
         guard let session else { return 0 }
         let y = Self.band - value
+        let tops = column
         var index = 0
-        for i in route.phases.indices where rowTop(i) <= y { index = i }
+        for i in route.phases.indices where tops[i] <= y { index = i }
         guard route.phases.indices.contains(index) else { return 0 }
         return route.phases[index].startedAt.timeIntervalSince(session.lowerBound)
     }
@@ -235,11 +245,15 @@ struct MapLayer: View {
     /// two from oscillating: whichever surface is under a finger owns the
     /// cursor and the other one's write is refused until the gesture ends.
     private func follow(_ cursor: TimeInterval) {
-        guard head.driver == .strip, let session else { return }
+        // `!= .timeline` rather than `== .strip`: the strip releases the driver
+        // in the same gesture callback that writes the snapped cursor, so by
+        // the time this observer runs the driver is already `.neither` and a
+        // guard on `.strip` would drop exactly the write that matters.
+        guard head.driver != .timeline, let session else { return }
         let instant = session.lowerBound.addingTimeInterval(cursor)
         guard let phase = route.phase(at: instant),
               let index = route.phases.firstIndex(where: { $0.id == phase.id }) else { return }
-        withAnimation(.glide) { scroll = clampScroll(Self.band - rowTop(index)) }
+        withAnimation(.glide) { scroll = clampScroll(Self.band - column[index]) }
     }
 
     /// The `seq` the cursor resolves to, for "delete everything before here".

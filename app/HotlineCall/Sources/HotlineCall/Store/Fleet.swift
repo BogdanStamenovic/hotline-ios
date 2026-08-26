@@ -533,7 +533,12 @@ final class Fleet {
                                       beforeSeq: beforeSeq, dryRun: false)
         }
         if case .ok = result {
-            channels[agent]?.invalidate(generation: (generations[agent] ?? 0) + 1)
+            // The generation the *roster* now reports, not a locally invented
+            // one: `run` has already hard-refreshed, so the server has told us
+            // what the history's generation is. Making one up here would make
+            // the next roster tick disagree and invalidate a second time.
+            let now = byID[agent]?.generation ?? generations[agent] ?? 0
+            channels[agent]?.invalidate(generation: now)
             if channels[agent] == nil { await cache.drop(agent) }
             if scope == "everything" { channels[agent] = nil }
         }
