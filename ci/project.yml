@@ -26,9 +26,6 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    # Package.swift's .defaultIsolation(MainActor.self). Every type in the
-    # module is UI state; without this the whole module fails to typecheck.
-    OTHER_SWIFT_FLAGS: "$(inherited) -default-isolation MainActor"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     CODE_SIGNING_ALLOWED: NO
     CODE_SIGNING_REQUIRED: NO
