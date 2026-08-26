@@ -42,9 +42,23 @@ struct InstrumentStrip: View {
 
     // MARK: - The cells
 
+    /// Telemetry rules between the cells rather than relying on the gap, which
+    /// is what stops three readings and a clock reading as one run-on number.
+    /// The rule is staged with the cell it precedes so it arrives on the same
+    /// beat instead of being there before the column it separates.
+    ///
+    /// Spacing drops from 26 to 13 because the rule now sits in the middle of
+    /// that gap: 13 + 1 + 13 is the 26 the cells always had.
     private var row: some View {
-        HStack(alignment: .top, spacing: 26) {
+        HStack(alignment: .top, spacing: 13) {
             ForEach(Array(cells.enumerated()), id: \.element.id) { index, cell in
+                if index > 0 {
+                    Rectangle()
+                        .fill(Theme.line2)
+                        .frame(width: 1, height: 34)
+                        .staged(.stripCell(index), nav, mo)
+                        .accessibilityHidden(true)
+                }
                 CellView(cell: cell)
                     .staged(.stripCell(index), nav, mo)
             }
@@ -68,6 +82,11 @@ struct InstrumentStrip: View {
         let id: String
         let label: String
         var value: String?
+        /// Carried apart from `value` so the number can be set at reading
+        /// weight and the unit under it, per Telemetry. Keeping them in one
+        /// string also fed the unit to `numericText`, which has nothing to
+        /// interpolate in "ch/s" and re-rasterises it on every tick regardless.
+        var unit: String?
         /// A live clock, ticked locally rather than at the roster's cadence.
         var clockFrom: Date?
         var hot = false
@@ -80,10 +99,10 @@ struct InstrumentStrip: View {
             // SERVER-PLAN 9.2 is explicit; the prototype said `tok/s` because
             // it was drawing an invented number.
             out.append(Cell(id: "output", label: "OUTPUT",
-                            value: "\(Int(vitals.tokensPerSec.rounded())) ch/s"))
+                            value: "\(Int(vitals.tokensPerSec.rounded()))", unit: "ch/s"))
             if let context = contextCell { out.append(context) }
             out.append(Cell(id: "tools", label: "TOOLS",
-                            value: String(format: "%.1f /min", vitals.toolsPerMin)))
+                            value: String(format: "%.1f", vitals.toolsPerMin), unit: "/min"))
         }
 
         // The label swaps with the state, and both tick every second. This is
@@ -110,7 +129,7 @@ struct InstrumentStrip: View {
     private var contextCell: Cell? {
         if let used = agent.vitals?.contextUsed {
             return Cell(id: "context", label: "CONTEXT",
-                        value: "\(Int((used * 100).rounded())) %", hot: used > 0.85)
+                        value: "\(Int((used * 100).rounded()))", unit: "%", hot: used > 0.85)
         }
         // "Not yet": the session has not taken its first turn, so the CLI
         // reports null and a real number is coming. Requires the server to
@@ -145,6 +164,20 @@ struct InstrumentStrip: View {
         }
 
         private func value(_ text: String) -> some View {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                number(text)
+                if let unit = cell.unit {
+                    Text(unit)
+                        .text(.cellUnit)
+                        // Dimmed against its own number rather than to a fixed
+                        // ink: on a hot cell the unit has to stay part of the
+                        // reading, not revert to grey beside an orange figure.
+                        .foregroundStyle(cell.hot ? Theme.sig.opacity(0.7) : Theme.ink3)
+                }
+            }
+        }
+
+        private func number(_ text: String) -> some View {
             Text(text)
                 .text(.cellValue)
                 .monospacedDigit()

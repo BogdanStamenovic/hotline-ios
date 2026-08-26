@@ -278,10 +278,19 @@ private struct ToolRow: View {
     let moment: Moment
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text((moment.tool ?? "tool").uppercased())
-                .text(.label(9.5))
-                .foregroundStyle(Theme.ink3)
+        // Telemetry sets a tool row as `-> Bash <call>`: the arrow carries the
+        // indent so the row reads as a consequence of the message above it, and
+        // the name is mixed case in full ink against the call in `ink2`. An
+        // uppercase grey label gave the name the same weight as the arguments,
+        // which is the opposite of what is being scanned for.
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("\u{2192}")
+                .text(.rowSubtitle)
+                .foregroundStyle(Theme.ink4)
+                .accessibilityHidden(true)
+            Text((moment.tool ?? "tool").capitalized)
+                .text(.toolName)
+                .foregroundStyle(Theme.ink)
             Text(moment.text)
                 .text(.rowSubtitle)
                 .foregroundStyle(Theme.ink2)

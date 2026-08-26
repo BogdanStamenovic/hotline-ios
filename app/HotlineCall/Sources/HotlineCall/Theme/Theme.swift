@@ -115,6 +115,15 @@ nonisolated struct TextStyle: Hashable, Sendable {
     static let body = TextStyle(15.5, .regular, em: -0.012, lineHeight: 1.42)
     static let rowSubtitle = TextStyle(13.5, .regular, em: -0.008)
     static let cellValue = TextStyle(15, .semibold, em: -0.025)
+    /// The unit beside a cell's number. Telemetry sets the two at different
+    /// weights on a shared baseline -- `0` carries the reading and `tok/s` only
+    /// says what it is -- so a strip of four scans as four numbers rather than
+    /// four strings. It is lowercase, so it takes none of `label`'s tracking.
+    static let cellUnit = TextStyle(10.5, .regular, em: -0.005)
+    /// The tool's name in a thread row. Mixed case in full ink against the
+    /// call in `ink2`: the name is the thing being scanned for, the arguments
+    /// are detail. `label` would set it uppercase and flatten that.
+    static let toolName = TextStyle(13.5, .semibold, em: -0.008)
 
     /// The uppercase label row: 9.5-11 pt at +0.09 to +0.15 em. Tracking rises
     /// with size across that range, which is what keeps the smallest labels
