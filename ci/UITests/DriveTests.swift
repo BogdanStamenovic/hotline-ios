@@ -96,6 +96,7 @@ final class DriveTests: XCTestCase {
         )
         mark("roster rendered")
         attachTree(app, name: "fleet-tree")
+        attachShot("fleet-shot")
     }
 
     // MARK: - The drive
@@ -194,6 +195,7 @@ final class DriveTests: XCTestCase {
         }
         settle(2.0)
         attachTree(app, name: "channel-tree")
+        attachShot("channel-shot")
 
         // ---- 5. scroll the thread -------------------------------------------
         // ThreadView ignores anything starting in the left 44 pt, which belongs
@@ -241,6 +243,7 @@ final class DriveTests: XCTestCase {
                         thenHoldForDuration: 0.2)
         settle(2.0)
         attachTree(app, name: "map-tree")
+        attachShot("map-shot")
 
         mark("map: scrub the timeline")
         for _ in 0..<3 {
@@ -281,6 +284,7 @@ final class DriveTests: XCTestCase {
 
         mark("=== drive ends ===")
         attachTree(app, name: "final-tree")
+        attachShot("final-shot")
     }
 
     // MARK: - Metrics
@@ -352,6 +356,26 @@ final class DriveTests: XCTestCase {
     /// step missed.
     private func attachTree(_ app: XCUIApplication, name: String) {
         let a = XCTAttachment(string: app.debugDescription)
+        a.name = name
+        a.lifetime = .keepAlways
+        add(a)
+    }
+
+    /// The screen itself, saved into the .xcresult beside the tree.
+    ///
+    /// **This exists because nothing this project builds has ever been looked
+    /// at.** The workflow does ask `simctl io` for a recording and a final
+    /// frame, but that step produced neither on run 32923724565 -- the
+    /// `drive-video` artifact was not created at all, and `if-no-files-found:
+    /// warn` meant the run still went green while claiming to have filmed
+    /// itself. The .xcresult is the channel that demonstrably works: the
+    /// element trees attached the same way came back intact.
+    ///
+    /// `.keepAlways` is load-bearing. An attachment defaults to
+    /// `deleteOnSuccess`, so on a passing run -- the only kind worth comparing
+    /// a design against -- every screenshot would be discarded before upload.
+    private func attachShot(_ name: String) {
+        let a = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         a.name = name
         a.lifetime = .keepAlways
         add(a)

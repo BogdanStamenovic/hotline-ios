@@ -148,6 +148,18 @@ jobs:
           kill -9 "$REC" 2>/dev/null || true
           sleep 1
           ls -la out/
+          # Say plainly whether the recorder produced anything. Run
+          # 32923724565 went green having created no drive-video artifact at
+          # all -- `if-no-files-found: warn` turns "we filmed nothing" into a
+          # line nobody reads, which is exactly the silent green this CI exists
+          # to stop. The recording stays best-effort; being quiet about it does
+          # not.
+          if [ -s out/drive.mp4 ]; then
+            echo "RECORDING $(stat -f%z out/drive.mp4) bytes"
+          else
+            echo "RECORDING NONE -- simctl io recordVideo produced no file"
+            echo "> \`simctl io recordVideo\` produced no file on this run." >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
           echo "--- the drive's own markers ---"
           grep -E "^MARK " out/test.log || echo "(no MARK lines -- the drive never started)"
@@ -216,10 +228,17 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           kill "$(cat stub.pid)" 2>/dev/null || true
 
+      # Belt and braces beside the in-test attachments: this one catches the
+      # state after the harness has let go, which `XCUIScreen` cannot.
       - name: Screenshot the final state
         if: always()
         run: |
           xcrun simctl io "${{ steps.sim.outputs.udid }}" screenshot out/final.png || true
+          if [ -s out/final.png ]; then
+            echo "FINAL FRAME $(stat -f%z out/final.png) bytes"
+          else
+            echo "FINAL FRAME NONE -- simctl io screenshot produced no file"
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()
