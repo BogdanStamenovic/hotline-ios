@@ -252,7 +252,7 @@ nonisolated struct Flight: ViewModifier, Animatable {
 
 /// APP-PLAN 9.6's fallback. One `Text` per character with the tracking applied
 /// as spacing, so positions interpolate and nothing is re-typeset.
-private struct GlyphRow: View, Animatable {
+private nonisolated struct GlyphRow: View, Animatable {
     let name: String
     var e: Double
 

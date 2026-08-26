@@ -306,13 +306,19 @@ private struct PinBar: View, Animatable {
     /// read the value would have SwiftUI interpolate the *result* of that clamp
     /// linearly between its endpoints -- which deletes the delay and turns the
     /// reveal into a plain grow. The same trap `Staged` exists for.
-    var reveal: Double
+    /// `nonisolated` because it is what `animatableData` projects, and SwiftUI
+    /// reads and writes that off the main actor while the animation runs. The
+    /// struct cannot go nonisolated wholesale the way its siblings do -- the
+    /// `@State`/`@Environment` below are property wrappers, and the compiler
+    /// rejects `nonisolated` on those -- so the isolation hole is opened here,
+    /// exactly as wide as the protocol requires and no wider.
+    nonisolated var reveal: Double
     let breathing: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var breath = false
 
-    var animatableData: Double {
+    nonisolated var animatableData: Double {
         get { reveal }
         set { reveal = newValue }
     }

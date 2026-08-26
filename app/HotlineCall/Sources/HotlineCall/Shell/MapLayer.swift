@@ -437,7 +437,7 @@ private struct MapFoot: View {
 ///
 /// It is the same reason `Staged` exists for the scene change, and the failure
 /// mode is the same one: silent, and it looks merely "less good".
-private struct RouteTimeline: View, Animatable {
+private nonisolated struct RouteTimeline: View, Animatable {
     let route: Route
     let blocked: Bool
     var scroll: Double
