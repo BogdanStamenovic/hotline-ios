@@ -205,13 +205,28 @@ final class DriveTests: XCTestCase {
         at(0.5, 0.30).press(forDuration: 0.05, thenDragTo: at(0.5, 0.85),
                             withVelocity: .fast, thenHoldForDuration: 0.0)
         settle(1.2)
+        // No row is hittable, and no row ever will be. `FleetLayer.arbiter` is
+        // one `DragGesture(minimumDistance: 0)` over the entire surface,
+        // deliberately, so that "a `Button` inside a row would take the touch
+        // before the axis lock could decide whether the finger meant to
+        // scroll" -- its own comment. Hit-testing a row's centre therefore
+        // returns the gesture surface, not the row, and `isHittable` is false
+        // for every row on every run.
+        //
+        // So `if target.isHittable` was a branch that could never be taken, and
+        // the fallback it fell through to tapped the first hittable *button* on
+        // the screen -- which on the fleet list is the header control, not a
+        // row. That is what opened no channel and turned this red.
+        //
+        // Tap the row's own coordinate instead. `endTap` resolves the agent
+        // from `value.startLocation`, so a touch anywhere in the row's frame is
+        // exactly what the app is built to receive.
         let target = row(app, named: "hotline-ios")
-        if target.exists && target.isHittable {
-            target.tap()
+        if target.waitForExistence(timeout: 5) {
+            target.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         } else {
-            mark("  row not hittable; tapping the first hittable row instead")
-            let any = app.buttons.allElementsBoundByIndex.first { $0.isHittable }
-            if let any { any.tap() } else { at(0.5, 0.44).tap() }
+            mark("  no row by label; tapping the first row's band by coordinate")
+            at(0.5, 0.44).tap()
         }
         settle(2.0)
         attachTree(app, name: "channel-tree")
@@ -222,8 +237,12 @@ final class DriveTests: XCTestCase {
         // is the element every map step below needs anyway.
         guard app.buttons["route-chip"].waitForExistence(timeout: 5) else {
             mark("  NO CHANNEL -- the tap did not open one; thread and map steps skipped")
+            // Printed, not only attached. The .xcresult needs a Mac to open and
+            // this project is driven from Linux, so a tree that exists only
+            // inside the bundle is a tree nobody reads -- which is how the
+            // is-it-hittable question stayed open across three runs.
+            logTree(app, name: "channel-tree-never-opened")
             XCTFail("channel did not open; every step after the row tap would have run against the fleet")
-            attachTree(app, name: "channel-tree-never-opened")
             return
         }
         mark("  channel is open")
@@ -466,6 +485,15 @@ final class DriveTests: XCTestCase {
     /// The element tree, saved into the .xcresult. Without identifiers this is
     /// the only way to find out afterwards what was actually on screen when a
     /// step missed.
+    /// The tree in the log as well as in the bundle, for the reason given at
+    /// the `NO CHANNEL` failure: the .xcresult cannot be opened without a Mac.
+    private func logTree(_ app: XCUIApplication, name: String) {
+        attachTree(app, name: name)
+        print("--- \(name) ---")
+        print(app.debugDescription)
+        print("--- end \(name) ---")
+    }
+
     private func attachTree(_ app: XCUIApplication, name: String) {
         let a = XCTAttachment(string: app.debugDescription)
         a.name = name
