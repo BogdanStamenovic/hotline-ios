@@ -89,6 +89,30 @@ final class DriveTests: XCTestCase {
             .firstMatch
     }
 
+    /// The first fleet row lying wholly inside the window.
+    ///
+    /// Rows are absolutely placed, so `exists` is true for rows scrolled off
+    /// either end and their frames go negative. Anything that drives this list
+    /// by element has to check the frame itself; XCTest's own `isHittable` will
+    /// not do it, because the app puts one gesture surface over the whole list
+    /// and hit-testing a row's centre returns that surface rather than the row.
+    ///
+    /// Width is what separates a row from its own swipe controls: rows span the
+    /// full width, RETASK/STOP/KILL are 74-118 pt children of one. Height rules
+    /// out the 52 pt `Retired` header, which toggles a section instead of
+    /// opening anything.
+    private func visibleRow(_ app: XCUIApplication) -> XCUIElement? {
+        let screen = app.windows.firstMatch.frame
+        return app.buttons.allElementsBoundByIndex.first { button in
+            let f = button.frame
+            return f.width >= screen.width * 0.8
+                && f.height >= 60
+                && f.minY >= screen.minY
+                && f.maxY <= screen.maxY
+                && button.label != "Retired"
+        }
+    }
+
     // MARK: - The one hard assertion
 
     func testLaunches() throws {
@@ -205,27 +229,26 @@ final class DriveTests: XCTestCase {
         at(0.5, 0.30).press(forDuration: 0.05, thenDragTo: at(0.5, 0.85),
                             withVelocity: .fast, thenHoldForDuration: 0.0)
         settle(1.2)
-        // No row is hittable, and no row ever will be. `FleetLayer.arbiter` is
-        // one `DragGesture(minimumDistance: 0)` over the entire surface,
-        // deliberately, so that "a `Button` inside a row would take the touch
-        // before the axis lock could decide whether the finger meant to
-        // scroll" -- its own comment. Hit-testing a row's centre therefore
-        // returns the gesture surface, not the row, and `isHittable` is false
-        // for every row on every run.
+        // Tap a row that is actually on the screen, and do not care which one.
         //
-        // So `if target.isHittable` was a branch that could never be taken, and
-        // the fallback it fell through to tapped the first hittable *button* on
-        // the screen -- which on the fleet list is the header control, not a
-        // row. That is what opened no channel and turned this red.
+        // `existseq` is not `is on screen here`. FleetLayer places every row
+        // absolutely inside a GeometryReader, so a row scrolled past the top is
+        // still in the accessibility tree, with a negative frame. Run
+        // 33012440901 asked for `hotline-ios` by name, got it, and tapped its
+        // centre -- the tree attached to that failure puts the row at
+        // {{0, -90}, {420, 116}}, so the touch landed at y = -32, above the
+        // window. The element existed, the tap was delivered nowhere, and the
+        // channel could not have opened.
         //
-        // Tap the row's own coordinate instead. `endTap` resolves the agent
-        // from `value.startLocation`, so a touch anywhere in the row's frame is
-        // exactly what the app is built to receive.
-        let target = row(app, named: "hotline-ios")
-        if target.waitForExistence(timeout: 5) {
+        // Naming a specific agent was never worth anything here: any row opens
+        // a channel, and which agent it belongs to changes nothing downstream.
+        // So take the first full-width row lying wholly inside the window.
+        if let target = visibleRow(app) {
+            mark("  tapping visible row: \(target.label.prefix(28))")
             target.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         } else {
-            mark("  no row by label; tapping the first row's band by coordinate")
+            mark("  no row lies fully on screen; tapping mid-list by coordinate")
+            logTree(app, name: "no-visible-row")
             at(0.5, 0.44).tap()
         }
         settle(2.0)

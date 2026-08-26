@@ -201,9 +201,40 @@ jobs:
           UDID="${{ steps.sim.outputs.udid }}"
           mkdir -p out
 
-          xcrun simctl io "$UDID" recordVideo --codec h264 --force out/control.mp4 &
-          REC=$!
-          sleep 2
+          # The drive's recorder can still own the device. SIGINT is what
+          # finalises an mp4, and the drive step follows it with SIGKILL after
+          # 20s -- a killed recorder leaves the simulator's host recording
+          # session open, and the next recordVideo is refused outright:
+          #   Error Domain=NSPOSIXErrorDomain Code=16 "Resource busy"
+          #   Host recording is already in progress
+          # That is exactly how run 33012440901 ran the whole control drive and
+          # filmed none of it, so wait for the device to let go, then check the
+          # recorder actually took rather than assuming it did.
+          pkill -INT -f 'simctl io .* recordVideo' 2>/dev/null || true
+          for _ in $(seq 1 20); do
+            pgrep -f 'simctl io .* recordVideo' >/dev/null 2>&1 || break
+            sleep 1
+          done
+
+          REC=""
+          for attempt in 1 2 3; do
+            : > out/control-rec.log
+            xcrun simctl io "$UDID" recordVideo --codec h264 --force out/control.mp4 \
+              >out/control-rec.log 2>&1 &
+            CANDIDATE=$!
+            sleep 4
+            if kill -0 "$CANDIDATE" 2>/dev/null \
+               && ! grep -qi "already in progress\|Resource busy" out/control-rec.log; then
+              REC="$CANDIDATE"
+              echo "control recorder started on attempt $attempt (pid $REC)"
+              break
+            fi
+            echo "control recorder attempt $attempt did not take:"
+            cat out/control-rec.log || true
+            kill -9 "$CANDIDATE" 2>/dev/null || true
+            sleep 5
+          done
+          [ -n "$REC" ] || echo "control recorder never started -- no baseline this run"
 
           cd ci
           xcodebuild test-without-building \
@@ -218,9 +249,11 @@ jobs:
           cd ..
 
           # SIGINT is what finalises the mp4; SIGKILL leaves it unplayable.
-          kill -INT "$REC" 2>/dev/null || true
-          for i in $(seq 1 20); do kill -0 "$REC" 2>/dev/null || break; sleep 1; done
-          kill -9 "$REC" 2>/dev/null || true
+          if [ -n "$REC" ]; then
+            kill -INT "$REC" 2>/dev/null || true
+            for i in $(seq 1 20); do kill -0 "$REC" 2>/dev/null || break; sleep 1; done
+            kill -9 "$REC" 2>/dev/null || true
+          fi
           sleep 1
 
           if [ -s out/control.mp4 ]; then
