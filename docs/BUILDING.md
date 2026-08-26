@@ -29,6 +29,36 @@ cannot produce one even by accident.
 there is no second device to support, and `onGeometryChange` -- iOS 18 --
 is on the critical path for the scene change's hero flight.
 
+## Where the toolchain lives, and why it disappears
+
+`/mnt/iosbuild` is **an ext4 image on the Windows partition**, not a directory
+on root. Root is 73G and was 89% full when this was set up; the toolchain is
+~32G, so it could not go there.
+
+    /mnt/windows/hotline-ios-build.img  ->  /mnt/iosbuild   (loop, ext4)
+
+**It is in `/etc/fstab` and comes up at boot.** It did not used to be, and the
+symptom when it is missing is worth recognising: `/mnt/iosbuild` still *exists*
+as an empty directory, so `env62.sh` is simply not found, `swiftc` is not on
+`PATH`, and every build and `app/wiretest/run.sh` fails as though the toolchain
+were never installed. Nothing says "unmounted" anywhere.
+
+If that happens, check the mount before you check anything else:
+
+    findmnt /mnt/iosbuild || sudo systemctl start mnt-iosbuild.mount
+
+The fstab entry carries `x-systemd.requires-mounts-for=/mnt/windows`, and that
+option is load-bearing rather than decorative. The image *file* lives inside
+`/mnt/windows`, so without the ordering systemd may attempt this mount before
+`mnt-windows.mount` is up; the loop setup then fails on a path that does not
+exist yet and the box boots with an empty `/mnt/iosbuild` -- the exact silent
+failure above. This is the same shape as the Ollama model store on this box
+(`/etc/systemd/system/ollama.service.d/10-windows-store.conf`).
+
+It also carries `nofail`, so a detached Windows disk costs you iOS builds
+rather than dropping the machine into emergency mode, and pass `0`, because a
+loop image over `ntfs3` must never be fsck'd at boot.
+
 ## The three pieces
 
 | Piece | Where | Why this one |

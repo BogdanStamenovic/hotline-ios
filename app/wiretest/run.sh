@@ -54,6 +54,12 @@ rm -f "$out"
 # macOS runner the Xcode toolchain is already the one on PATH, and that file
 # does not exist -- so this is conditional rather than unconditional, and the
 # same script is the check in both places.
+#
+# On archserver /mnt/iosbuild is an ext4 image on the Windows partition,
+# mounted from /etc/fstab at boot (docs/BUILDING.md, "Where the toolchain lives").
+# If env62.sh is missing there, the mount is down rather than the toolchain
+# uninstalled -- the directory still exists and is simply empty, so this script
+# fails looking like a broken install. `findmnt /mnt/iosbuild` settles it.
 if [[ -f /mnt/iosbuild/env62.sh ]]; then
     source /mnt/iosbuild/env62.sh
 fi
