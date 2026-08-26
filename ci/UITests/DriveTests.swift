@@ -287,12 +287,23 @@ final class DriveTests: XCTestCase {
 
     /// The Apple-native measure, attempted honestly.
     ///
-    /// `XCTOSSignpostMetric.scrollDecelerationHitches` only reports if the
-    /// scrolling surface is `UIScrollView`-backed and emits the system's
-    /// scroll signposts. This app's fleet list is not a `UIScrollView` -- it is
-    /// absolutely-placed rows over a hand-rolled `scroll` value -- so the
-    /// expectation is that this yields nothing. It is run anyway, because
-    /// "we tried it and it reported nothing" is a result and a guess is not.
+    /// There is no signpost metric here, and the reason is worth keeping.
+    ///
+    /// `XCTOSSignpostMetric.scrollDecelerationHitches` does not exist -- the
+    /// build failed on it, which is how it was found. The member was invented,
+    /// and it blocked every run for as long as it sat here.
+    ///
+    /// It was removed rather than renamed. Some near neighbour of that name
+    /// almost certainly exists, but picking one without a Mac to compile
+    /// against is the same guess that produced the original, and each guess
+    /// costs a full macOS run to disprove. Worse, the surrounding comment
+    /// already argued the metric could not report anything here: the signpost
+    /// metrics only fire for `UIScrollView`-backed surfaces, and this app's
+    /// fleet list is absolutely-placed rows over a hand-rolled `scroll` value.
+    /// So the correct name would have bought a metric that measures nothing.
+    ///
+    /// `XCTClockMetric` has no such precondition and does report, so the drag
+    /// below is still measured -- just in wall-clock rather than in hitches.
     ///
     /// `XCTApplicationLaunchMetric` and `XCTClockMetric` do not have that
     /// precondition and will report.
@@ -310,10 +321,7 @@ final class DriveTests: XCTestCase {
         _ = row(app, named: "hotline-ios").waitForExistence(timeout: 30)
         settle(1.0)
 
-        let metrics: [XCTMetric] = [
-            XCTOSSignpostMetric.scrollDecelerationHitches,
-            XCTClockMetric(),
-        ]
+        let metrics: [XCTMetric] = [XCTClockMetric()]
         let options = XCTMeasureOptions()
         options.invocationOptions = [.manuallyStop]
         options.iterationCount = 3
