@@ -48,6 +48,25 @@ struct Shell: View {
     // ---- step 8: the map, on its own progress value ----------------------
     @State private var map: Double = 0
     @State private var mapOpen = false
+    /// **A finger is on the map seam right now.**
+    ///
+    /// It exists to keep `allowsHitTesting` still for the duration of a drag.
+    /// The channel was armed below `map < 0.5` and the map above `map > 0.5`,
+    /// both read live — so a drag that pushed the scalar through 0.5 disarmed
+    /// the layer that owned the recognizer, SwiftUI cancelled the gesture,
+    /// `onEnded` never ran, and the map came to rest at exactly the value where
+    /// *neither* layer answered a touch. That is the half-open map drawn over
+    /// the conversation, and it is also why the reply underneath it could not
+    /// be scrolled to.
+    ///
+    /// A latch rather than a wider threshold: the gate has to be a value the
+    /// drag does not write, or the same race comes back at whatever number it
+    /// is moved to.
+    @State private var mapDragging = false
+    /// The same latch for the sheets, which had the same gate (`progress > 0.5`
+    /// on the sheet itself) and therefore the same failure — with the whole app
+    /// frozen behind it, since every other layer is gated on `sheetKind == nil`.
+    @State private var sheetDragging = false
 
     // ---- step 9: the atomic lock and the card's three tracks -------------
     //
@@ -121,9 +140,11 @@ struct Shell: View {
                              onControls: { present(.controls(open)) },
                              onContinue: { continueAfterCompact(agent) },
                              onMapDrag: slideMap,
+                             onRetire: { retire(agent, !agent.isRetired) },
+                             onPurge: { present(.purge(open, nil)) },
                              onAnswer: { answer(agent, channel, $0) })
                     .id(open)
-                    .allowsHitTesting(sheetKind == nil && !locked && map < 0.5)
+                    .allowsHitTesting(sheetKind == nil && !locked && (map < 0.5 || mapDragging))
                     // Behind the map it is pushed back and softened rather than
                     // merely dimmed, because it *is* behind something now.
                     .brightness(-0.5 * map)
@@ -134,6 +155,7 @@ struct Shell: View {
 
                 if mapOpen {
                     MapLayer(agent: agent, channel: channel, progress: map, mo: mo,
+                             seamDragging: mapDragging,
                              onDrag: slideMap,
                              onPurgeBefore: { present(.purge(open, $0)) })
                         .allowsHitTesting(!locked)
@@ -290,8 +312,7 @@ struct Shell: View {
         case .move(let progress):
             nav = progress
         case .release(let velocityPerSecond):
-            let predicted = nav + project(velocityPerSecond)
-            let target: Double = predicted < 0.55 ? 0 : 1
+            let target = seamTarget(nav, velocity: velocityPerSecond, commit: 0.55)
             let distance = target - nav
             let v0 = abs(distance) < 1e-4 ? 0 : velocityPerSecond / distance
             if target == 0 {
@@ -323,7 +344,8 @@ struct Shell: View {
         case .controls(let id):
             if let agent = fleet[id] {
                 ControlSheet(
-                    agent: agent, progress: sheet, busy: busyControl,
+                    agent: agent, progress: sheet, dragging: sheetDragging,
+                    busy: busyControl,
                     onDismiss: { dismissSheet() },
                     onDispatch: { dispatch(agent, $0) },
                     onRetask: { text, stopFirst in retask(agent, text, stopFirst) },
@@ -334,11 +356,12 @@ struct Shell: View {
             }
         case .brief:
             BriefSheet(capability: fleet.globalControls.first { $0.id == "new" },
-                       progress: sheet, busy: busyControl != nil,
+                       progress: sheet, dragging: sheetDragging, busy: busyControl != nil,
                        onDismiss: { dismissSheet() }, onSend: brief(task:), onDrag: slide)
         case .purge(let id, let beforeSeq):
             if let agent = fleet[id] {
-                PurgeSheet(agent: agent, progress: sheet, beforeSeq: beforeSeq,
+                PurgeSheet(agent: agent, progress: sheet, dragging: sheetDragging,
+                           beforeSeq: beforeSeq,
                            onDismiss: { dismissSheet() }, onDrag: slide,
                            dryRun: { scope, before in
                                await fleet.dryRun(id, scope: scope, beforeSeq: before)
@@ -362,16 +385,21 @@ struct Shell: View {
     // app share one shape; the slam card is deliberately outside it (§9.2).
 
     private func slideMap(_ phase: SheetPhase) {
-        guard !locked else { return }
         switch phase {
         case .move(let progress):
+            guard !locked else { return }
+            mapDragging = true
             // Opens as soon as it is peeking rather than at the commit, so the
             // panel is never a blank rectangle sliding down.
             if progress > 0.04 { mapOpen = true }
             map = progress
         case .release(let velocityPerSecond):
-            let predicted = map + project(velocityPerSecond)
-            let target: Double = predicted < 0.42 ? 0 : 1
+            // **The lock does not swallow a release.** `.move` is refused while
+            // the card holds it, but a release that arrives because the lock
+            // landed mid-drag is the last chance this seam has to reach a
+            // resting state, and dropping it parks the map half-open forever.
+            mapDragging = false
+            let target = seamTarget(map, velocity: velocityPerSecond, commit: 0.42)
             let distance = target - map
             let v0 = abs(distance) < 1e-4 ? 0 : velocityPerSecond / distance
             withAnimation(.interpolatingSpring(mass: 1,
@@ -394,6 +422,7 @@ struct Shell: View {
 
     private func closeMap() {
         guard mapOpen else { return }
+        mapDragging = false
         withAnimation(.navBack) { map = 0 }
         Task {
             try? await Task.sleep(for: .milliseconds(600))
@@ -453,6 +482,7 @@ struct Shell: View {
     /// one part of this app that is not spring-driven, and its pre-roll has to
     /// match it or the two read as separate events.
     func dismissSheet(drawer: Bool = false) {
+        sheetDragging = false
         withAnimation(drawer ? .timingCurve(0.32, 0.72, 0, 1, duration: 0.44) : .navBack,
                       completionCriteria: .removed) {
             sheet = 0
@@ -464,10 +494,11 @@ struct Shell: View {
     private func slide(_ phase: SheetPhase) {
         switch phase {
         case .move(let progress):
+            sheetDragging = true
             sheet = progress
         case .release(let velocityPerSecond):
-            let predicted = sheet + project(velocityPerSecond)
-            let target: Double = predicted < 0.55 ? 0 : 1
+            sheetDragging = false
+            let target = seamTarget(sheet, velocity: velocityPerSecond, commit: 0.55)
             let distance = target - sheet
             let v0 = abs(distance) < 1e-4 ? 0 : velocityPerSecond / distance
             withAnimation(.interpolatingSpring(mass: 1,

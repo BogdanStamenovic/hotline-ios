@@ -696,5 +696,139 @@ check(autoOpen(in: one, launch: .cold,
       "and backing out of a DIFFERENT channel is not a veto at all")
 
 // ---------------------------------------------------------------------------
+section("every seam rests at 0 or 1, and nowhere in between")
+
+// The defect this exists for: the map came to rest half-open, drawn over the
+// conversation, with the channel underneath it non-interactive. `seamTarget` is
+// the release rule all five seams share, and the property it has to have is not
+// "usually snaps" -- it is that no input at all produces a third resting state.
+do {
+    var offenders: [String] = []
+    var reachedZero = false
+    var reachedOne = false
+    for commit in [0.42, 0.55] {
+        for p in stride(from: 0.0, through: 1.0, by: 0.01) {
+            for v in stride(from: -6.0, through: 6.0, by: 0.05) {
+                let t = seamTarget(p, velocity: v, commit: commit)
+                if t == 0 { reachedZero = true } else if t == 1 { reachedOne = true }
+                else { offenders.append("p=\(p) v=\(v) -> \(t)") }
+            }
+        }
+    }
+    check(offenders.isEmpty,
+          "\(offenders.count == 0 ? "48 642" : "\(offenders.count) of 48 642") "
+          + "(progress, velocity) pairs land on exactly 0 or exactly 1")
+    check(reachedZero && reachedOne, "and both ends are actually reachable, so it is not a constant")
+}
+
+// 0.5 is not an arbitrary sample: it is the exact value the map used to park on,
+// because it is where `ChannelLayer` stopped hit-testing and `MapLayer` had not
+// started. A release from there has to leave it.
+check(seamTarget(0.5, velocity: 0, commit: 0.42) == 1,
+      "**a release at the map's old stuck point commits** -- 0.5 is past 0.42, so it opens")
+check(seamTarget(0.5, velocity: 0, commit: 0.55) == 0,
+      "a sheet released at 0.5 closes, because 0.55 is its threshold and it has not reached it")
+check(seamTarget(0.9, velocity: -3, commit: 0.42) == 0,
+      "a hard flick back beats position: 0.9 with -3/s projects to -0.6")
+check(seamTarget(0.1, velocity: 3, commit: 0.42) == 1, "and the same the other way")
+check(seamTarget(0, velocity: 0, commit: 0.42) == 0, "an untouched seam stays shut")
+check(seamTarget(1, velocity: 0, commit: 0.42) == 1, "and an open one stays open")
+
+// ---------------------------------------------------------------------------
+section("the fleet row's swipe (APP-PLAN 4.7's table)")
+
+// His report was "the swipe just does stuff, it isn't really usable". These are
+// the numbers behind that: `stop` on the left at -148, `retask`/`resume` on the
+// right at +118, the limits `FleetLayer` computes for a live agent.
+let L = 148.0
+let R = 118.0
+
+check(swipeOutcome(x: -L, velocity: -600, leftLimit: L, rightLimit: R) == .openLeft,
+      "**swiping the row open at 600 pt/s opens it** -- as shipped this fired `stop`")
+check(swipeOutcome(x: -L, velocity: -200, leftLimit: L, rightLimit: R) == .openLeft,
+      "and so does 200 pt/s, which is a slow one and still fired it")
+check(swipeOutcome(x: R, velocity: 400, leftLimit: L, rightLimit: R) == .openRight,
+      "the right side opens too, where 400 pt/s used to dispatch `retask`")
+check(swipeOutcome(x: -L, velocity: 0, leftLimit: L, rightLimit: R) == .openLeft,
+      "held still at the limit, it rests open -- the one release that used to work")
+
+check(swipeOutcome(x: -L - 80, velocity: 0, leftLimit: L, rightLimit: R) == .fireLeft,
+      "dragged a full 80 pt past the limit and released, it commits: that is the full swipe")
+check(swipeOutcome(x: R + 70, velocity: 0, leftLimit: L, rightLimit: R) == .fireRight,
+      "and the same on the right")
+
+// The clause that was dead code. With the old projected-end test, `v < -1100`
+// and `x < -60` implied an end below -609, which had already tripped the first
+// clause -- so the fling rule could never be the branch that decided anything.
+check(swipeOutcome(x: -70, velocity: -1400, leftLimit: L, rightLimit: R) == .fireLeft,
+      "**the fling clause decides something again**: -70 pt at -1400 pt/s commits")
+check(swipeOutcome(x: -70, velocity: -900, leftLimit: L, rightLimit: R) == .openLeft,
+      "and -900 pt/s does not, so it is a threshold rather than a formality")
+check(swipeOutcome(x: 60, velocity: 1400, leftLimit: L, rightLimit: R) == .fireRight,
+      "the right fling mirrors it")
+
+check(swipeOutcome(x: -20, velocity: 0, leftLimit: L, rightLimit: R) == .closed,
+      "a 20 pt nudge released is nothing at all")
+check(swipeOutcome(x: 0, velocity: 0, leftLimit: L, rightLimit: R) == .closed,
+      "and so is no movement")
+
+// A dead agent has no `stop` and no `kill`, so `leftLimit` is 0 and the row must
+// not move at all in that direction. An empty capability list renders as no
+// controls; it never invents one.
+check(swipeOutcome(x: -400, velocity: -2000, leftLimit: 0, rightLimit: R) == .closed,
+      "**with nothing declared on the left, no amount of swipe fires anything**")
+check(swipeOutcome(x: 400, velocity: 2000, leftLimit: L, rightLimit: 0) == .closed,
+      "and the same on the right")
+
+// The regression itself, spelled out so it cannot come back quietly.
+check(-L + project(-200) < -L - 74,
+      "the old rule's arithmetic: at the limit, 200 pt/s already projected past the commit line")
+check(!(-L < -L - 74),
+      "the new one needs the finger to actually be there, and at the limit it is not")
+
+// ---------------------------------------------------------------------------
+section("authority: a standing role, carried through untouched")
+
+do {
+    let page = try decoder.decode(AgentsPage.self, from: load("today-agents.json"))
+    let admin = page.agents.first { $0.authority != nil }
+    check(admin != nil, "the live roster carries `authority` on at least one row")
+    check(admin?.authority == "sys-admin",
+          "and it is hotline's own string, not a boolean the daemon derived")
+    check(admin?.isSysAdmin == true, "which is the role `Registry.Agent.privileged` names")
+    check(admin?.authorityLabel == "SYS-ADMIN", "the badge says it in the app's own case")
+    check(page.agents.contains { $0.authority == nil },
+          "every other row sends null, and null is the normal case")
+    check(page.agents.allSatisfy { $0.authority != nil || $0.authorityLabel == nil },
+          "**absent means no badge** -- nothing is drawn for a role that was not granted")
+} catch {
+    check(false, "authority decodes off the live roster: \(error)")
+}
+
+do {
+    // A roster row from a daemon that predates the field. The whole
+    // forward-compatibility story is that this still decodes and renders less.
+    let old = try decoder.decode(Agent.self, from: """
+    {"name":"a","task":"t","cwd":"","live":true,"busy":false}
+    """.data(using: .utf8)!)
+    check(old.authority == nil, "a row with no `authority` key decodes")
+    check(old.authorityLabel == nil, "and draws no badge")
+    check(old.isSysAdmin == false, "and is not privileged, which is the narrower answer and the right one")
+
+    let blank = try decoder.decode(Agent.self, from: """
+    {"name":"a","task":"t","cwd":"","live":true,"busy":false,"authority":""}
+    """.data(using: .utf8)!)
+    check(blank.authorityLabel == nil,
+          "an empty string draws no badge either -- a bordered capsule with nothing in it is a bug")
+
+    let future = try decoder.decode(Agent.self, from: """
+    {"name":"a","task":"t","cwd":"","live":true,"busy":false,"authority":"release-manager"}
+    """.data(using: .utf8)!)
+    check(future.authorityLabel == "RELEASE-MANAGER",
+          "**a role this build has never heard of renders itself** rather than being dropped")
+    check(future.isSysAdmin == false, "without claiming to be the one role the app knows")
+}
+
+// ---------------------------------------------------------------------------
 print("\n\(checks - failures)/\(checks) checks passed")
 exit(failures == 0 ? 0 : 1)

@@ -44,6 +44,19 @@ nonisolated struct Agent: Identifiable, Hashable, Sendable, Codable {
     /// Server-declared, never inferred. Absent until server step 8, and an
     /// absent list renders as no controls rather than a guessed one.
     let controls: [Capability]?
+    /// `"sys-admin"`, or absent. **A standing role granted by Bogdan**, held on
+    /// hotline's own registry record (`Registry.Agent.authority`) and carried
+    /// through the roster row untouched.
+    ///
+    /// It is a fact about the agent, not a state of it: it survives every
+    /// process the agent runs, it is not derived from liveness, and nothing the
+    /// agent does changes it. That is why it is rendered as a label the name
+    /// carries rather than anywhere near the status dot's vocabulary.
+    ///
+    /// Kept as the raw string rather than a `Bool`: hotline's own field is
+    /// `str | None` and a second role would otherwise decode as "not
+    /// sys-admin", which is the narrower answer *and* the wrong one.
+    let authority: String?
 
     var id: AgentID { name }
 
@@ -77,6 +90,20 @@ nonisolated struct Agent: Identifiable, Hashable, Sendable, Codable {
     var isStalled: Bool { stalled ?? false }
     var generation: Int { historyGeneration ?? 0 }
     var capabilities: [Capability] { controls ?? [] }
+
+    /// What the badge says, or nothing at all. An empty string on the wire is
+    /// the same as an absent one -- a badge with no word in it is a rendering
+    /// bug wearing a border.
+    var authorityLabel: String? {
+        guard let authority, !authority.trimmingCharacters(in: .whitespaces).isEmpty
+        else { return nil }
+        return authority.uppercased()
+    }
+
+    /// The role hotline's own `Agent.privileged` names. Present so a future
+    /// build can branch on it without re-deriving the string comparison, and
+    /// deliberately not what the badge is drawn from.
+    var isSysAdmin: Bool { authority == "sys-admin" }
 
     var presence: Presence {
         Self.presence(state: state, blocked: isBlocked, live: live, busy: busy)

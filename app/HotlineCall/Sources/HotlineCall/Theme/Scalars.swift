@@ -58,6 +58,65 @@ nonisolated func unrubber(_ banded: Double, _ dim: Double, _ c: Double = 0.55) -
 /// `(v/1000) * 0.998 / (1 - 0.998)` = `v * 0.499`.
 nonisolated func project(_ velocity: Double) -> Double { velocity * 0.499 }
 
+// MARK: - Seams
+
+/// Where a seam lands when the finger lets go.
+///
+/// **Every seam in this app is a 0...1 scalar that comes to rest at exactly 0 or
+/// exactly 1.** There is no third resting state, and the reason is not
+/// tidiness: a panel that rests half-open is drawn over the screen it was
+/// pulled out of, and on this build neither of the two was usable while it was
+/// -- the map's own recognizer is armed above 0.5 and the channel's below it, so
+/// a scalar parked at 0.5 belonged to nobody.
+///
+/// It is a free function so `app/wiretest/run.sh` can execute the invariant:
+/// no `(progress, velocity)` pair produces anything other than 0 or 1.
+nonisolated func seamTarget(_ progress: Double, velocity: Double, commit: Double) -> Double {
+    progress + project(velocity) < commit ? 0 : 1
+}
+
+// MARK: - The fleet list's row swipe
+
+nonisolated enum SwipeOutcome: String, Sendable, Hashable {
+    /// Fire the first left capability -- `stop` in the server's order, and a
+    /// fling only ever commits the reversible one (APP-PLAN 4.7).
+    case fireLeft
+    case fireRight
+    case openLeft
+    case openRight
+    case closed
+}
+
+/// APP-PLAN 4.7's row-swipe table, as a function rather than as four `if`s
+/// buried in a gesture that cannot be executed on this box.
+///
+/// **Why the commit test is the release *position* and not the projected end.**
+/// `project(v) = 0.499·v` is the scroll deceleration projection: right for a
+/// fling that travels hundreds of points, wrong by an order of magnitude for a
+/// drawer 118 to 148 pt deep. With the row open at its limit, the table's
+/// `end < -lim - 74` needed only `v < -148 pt/s` -- slower than any deliberate
+/// swipe -- so simply *opening* the row fired `stop`, and opening it the other
+/// way fired `retask`. That is the whole of "the swipe just does stuff".
+///
+/// The same arithmetic made the fling clause unreachable: whenever
+/// `v < -1100` and `x < -60`, the projected end is already below -609 and the
+/// first clause had therefore always fired. The table means the two as "he
+/// swiped it all the way" and "he flung it"; as written the first subsumed the
+/// second. Position restores the split, and the fling clause is doing its job
+/// again.
+///
+/// Opening still reads the projected end, because whether he *meant* to leave
+/// the row open genuinely is a momentum question.
+nonisolated func swipeOutcome(x: Double, velocity: Double,
+                              leftLimit: Double, rightLimit: Double) -> SwipeOutcome {
+    if leftLimit > 0, x < -leftLimit - 74 || (velocity < -1100 && x < -60) { return .fireLeft }
+    if rightLimit > 0, x > rightLimit + 66 || (velocity > 1100 && x > 50) { return .fireRight }
+    let end = x + project(velocity)
+    if leftLimit > 0, end < -leftLimit * 0.62 { return .openLeft }
+    if rightLimit > 0, end > 74 { return .openRight }
+    return .closed
+}
+
 // MARK: - The map's focus band
 
 /// How open the phase whose top edge is at `top` should be (APP-PLAN 6.2).

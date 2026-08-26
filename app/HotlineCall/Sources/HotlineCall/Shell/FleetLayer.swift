@@ -354,36 +354,37 @@ struct FleetLayer: View {
         }
     }
 
+    /// APP-PLAN 4.7's table, decided by `swipeOutcome` in `Theme/Scalars.swift`.
+    ///
+    /// It lives there rather than here for the reason the rest of this app's
+    /// decisions do: that file imports Foundation alone, so `app/wiretest/run.sh`
+    /// *executes* the table instead of a build log asserting it. This one was
+    /// worth moving — as shipped, the projected-end commit test fired `stop` on
+    /// any release faster than 148 pt/s, which is every swipe that opens the
+    /// row. See the note on `swipeOutcome`.
     private func endSwipe(_ value: DragGesture.Value) {
         guard let id = swiped, let agent = fleet[id] else { return }
-        let vx = value.velocity.width
-        let x = swipeX
-        let end = x + project(vx)
         let left = leftLimit(agent)
         let right = rightLimit(agent)
 
+        switch swipeOutcome(x: swipeX, velocity: value.velocity.width,
+                            leftLimit: left, rightLimit: right) {
         // A fling only ever commits the reversible action. `kill` must be
         // tapped and then held (APP-PLAN 9.5) -- this is the gesture-level half
         // of that rule, and it is why only the *first* left control is ever
         // reachable by a throw.
-        if left > 0, end < -left - Self.pullThreshold || (vx < -1100 && x < -60) {
+        case .fireLeft:
             fire(leftControls(agent).first, agent)
-            return
-        }
-        if right > 0, end > right + 66 || (vx > 1100 && x > 50) {
+        case .fireRight:
             fire(rightControl(agent), agent)
-            return
-        }
-        if left > 0, end < -left * 0.62 {
+        case .openLeft:
             withAnimation(.snap) { swipeX = -left }
-            return
-        }
-        if right > 0, end > Self.pullThreshold {
+        case .openRight:
             withAnimation(.snap) { swipeX = right }
-            return
+        case .closed:
+            withAnimation(.snap) { swipeX = 0 }
+            swiped = nil
         }
-        withAnimation(.snap) { swipeX = 0 }
-        swiped = nil
     }
 
     private func fire(_ capability: Capability?, _ agent: Agent) {

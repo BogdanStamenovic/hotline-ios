@@ -36,6 +36,10 @@ struct MapLayer: View {
     /// 0...1, the same mechanism as `nav`: scrubbable, reversible, drag-owned.
     let progress: Double
     let mo: Double
+    /// A finger is on this seam. It keeps the panel hit-testable for the whole
+    /// of a drag that pushes `progress` back down through 0.5 -- see `Shell`'s
+    /// `mapDragging`, and `SeamDrag`.
+    let seamDragging: Bool
     let onDrag: (SheetPhase) -> Void
     let onPurgeBefore: (Int) -> Void
 
@@ -68,9 +72,15 @@ struct MapLayer: View {
             .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
             .background(Theme.bgLift.ignoresSafeArea())
             .offset(y: -(1 - progress) * geo.size.height)
-            .gesture(blind(height: geo.size.height))
+            .seamDrag(progress: progress, minimumDistance: 8,
+                      // The grabber, in the panel's own space. A drag that
+                      // starts lower belongs to the timeline's scrub.
+                      accepts: { $0.y < 90 },
+                      delta: { $0.height / max(geo.size.height, 1) * 1.35 },
+                      rate: { $0.height / max(geo.size.height, 1) * 1.35 },
+                      phase: onDrag)
         }
-        .allowsHitTesting(progress > 0.5)
+        .allowsHitTesting(progress > 0.5 || seamDragging)
         // The reveal is torn down 440 ms *after* the panel has left, not on
         // release: resetting on release empties the map while he is still
         // watching it go.
@@ -241,20 +251,6 @@ struct MapLayer: View {
         guard let session else { return nil }
         let instant = session.lowerBound.addingTimeInterval(cursor)
         return channel.moments.last { $0.at <= instant }?.seq
-    }
-
-    // MARK: - The blind
-
-    private func blind(height: Double) -> some Gesture {
-        DragGesture(minimumDistance: 8)
-            .onChanged { value in
-                guard value.startLocation.y < 90 else { return }
-                onDrag(.move(clamp(progress + value.translation.height / max(height, 1) * 1.35, 0, 1)))
-            }
-            .onEnded { value in
-                guard value.startLocation.y < 90 else { return }
-                onDrag(.release(value.velocity.height / max(height, 1) * 1.35))
-            }
     }
 
 }

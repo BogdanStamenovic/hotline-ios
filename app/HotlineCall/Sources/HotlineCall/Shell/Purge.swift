@@ -18,6 +18,8 @@ import SwiftUI
 struct PurgeSheet: View {
     let agent: Agent
     let progress: Double
+    /// A finger is on this seam; see `Shell`'s `sheetDragging` and `SeamDrag`.
+    let dragging: Bool
     /// From the map's cursor, when he came in through "delete everything before
     /// here". `nil` is the whole history.
     let beforeSeq: Int?
@@ -56,19 +58,13 @@ struct PurgeSheet: View {
                             .ignoresSafeArea(edges: .bottom)
                     )
                     .offset(y: (1 - progress) * geo.size.height)
-                    .gesture(
-                        DragGesture(minimumDistance: 6)
-                            .onChanged { value in
-                                onDrag(.move(clamp(progress - value.translation.height
-                                                   / max(geo.size.height, 1), 0, 1)))
-                            }
-                            .onEnded { value in
-                                onDrag(.release(-value.velocity.height / max(geo.size.height, 1)))
-                            }
-                    )
+                    .seamDrag(progress: progress,
+                              delta: { -$0.height / max(geo.size.height, 1) },
+                              rate: { -$0.height / max(geo.size.height, 1) },
+                              phase: onDrag)
             }
         }
-        .allowsHitTesting(progress > 0.5)
+        .allowsHitTesting(progress > 0.5 || dragging)
         .task(id: scope) { await recount() }
     }
 

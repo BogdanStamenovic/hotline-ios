@@ -33,6 +33,12 @@ struct ChannelLayer: View {
     let onControls: () -> Void
     let onContinue: () -> Void
     let onMapDrag: (SheetPhase) -> Void
+    /// APP-PLAN 8.1, reversible and unconfirmed. Toggles this agent in and out
+    /// of the retired section.
+    let onRetire: () -> Void
+    /// APP-PLAN 8.2. Opens `PurgeSheet` on the whole history -- the same sheet
+    /// and the same hold the control sheet and the map's cursor reach.
+    let onPurge: () -> Void
     let onAnswer: (String) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -122,12 +128,27 @@ struct ChannelLayer: View {
             // The hero's destination. Its opacity is a hard swap at e > 0.88,
             // where the travelling copy hides -- one object arriving, not two
             // labels crossfading.
-            Text(agent.name)
-                .text(.screenTitle)
-                .foregroundStyle(Theme.ink)
-                .staged(.headerTitle, nav, mo)
-                .frame(height: 34, alignment: .leading)
-                .padding(.top, HeroDestination.y)
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(agent.name)
+                    .text(.screenTitle)
+                    .foregroundStyle(Theme.ink)
+                    .staged(.headerTitle, nav, mo)
+                    .frame(height: 34, alignment: .leading)
+                // **A standing role, not a state.** It is granted by him and it
+                // outlives every process this agent runs, so it is drawn as a
+                // label the name carries rather than as anything that could be
+                // read off the status dot's vocabulary -- no `sig`, no motion,
+                // no fill. Absent means no badge, and the string is the
+                // server's, so a role this build has never heard of still
+                // renders itself.
+                if let authority = agent.authorityLabel {
+                    Chip(text: authority, tint: Theme.ink3)
+                        .staged(.stateLine, nav, mo)
+                        .accessibilityLabel("standing role: \(authority.lowercased())")
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.top, HeroDestination.y)
 
             Rectangle()
                 .fill(Theme.sig)
@@ -135,27 +156,54 @@ struct ChannelLayer: View {
                 .staged(.accentRule, nav, mo)
                 .padding(.top, 10)
 
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 // Pull it down to open the map. `p = dy / height * 1.35`,
                 // and the reveal starts as soon as it is peeking rather than at
                 // the commit, so the panel is never a blank rectangle.
+                //
+                // The map seam is dragged from 0, so `SeamDrag`'s snapshot is 0
+                // and the arithmetic is unchanged; what it adds here is the
+                // cancellation report.
                 PhaseChip(count: channel.route.phases.count)
                     .staged(.phaseChip, nav, mo)
                     .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 6)
-                            .onChanged { value in
-                                onMapDrag(.move(clamp(value.translation.height
-                                                      / max(viewport, 1) * 1.35, 0, 1)))
-                            }
-                            .onEnded { value in
-                                onMapDrag(.release(value.velocity.height
-                                                   / max(viewport, 1) * 1.35))
-                            }
-                    )
+                    .seamDrag(progress: 0,
+                              delta: { $0.height / max(viewport, 1) * 1.35 },
+                              rate: { $0.height / max(viewport, 1) * 1.35 },
+                              phase: onMapDrag)
                     .accessibilityAddTraits(.isButton)
                     .accessibilityLabel("Route. \(channel.route.phases.count) phases.")
                     .accessibilityAction { onMapDrag(.move(1)); onMapDrag(.release(0)) }
+
+                // **Retention lives here because this is the screen that is
+                // about one agent.** It was reachable only from the control
+                // sheet behind the state line and from a long press inside the
+                // map, and he could not find either -- both are gestures onto
+                // things that do not look like they lead anywhere. These are
+                // labelled, they are two taps from the fleet list, and they sit
+                // beside the other chip on the only screen where "this history"
+                // is unambiguous.
+                //
+                // The two look nothing alike, per APP-PLAN 8: retire is a plain
+                // outline in ordinary ink and commits on the tap because it
+                // destroys nothing, and delete is `sig` and opens the count
+                // sheet, which is where the hold and the real numbers are.
+                Chip(text: agent.isRetired ? "UNRETIRE" : "RETIRE", tint: Theme.ink3)
+                    .staged(.phaseChip, nav, mo)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: onRetire)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel(agent.isRetired
+                                        ? "Retired. Tap to put it back in the fleet."
+                                        : "Retire. It keeps running; you stop seeing it in the fleet.")
+
+                Chip(text: "DELETE HISTORY", tint: Theme.sig, stroke: Theme.sig20)
+                    .staged(.phaseChip, nav, mo)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: onPurge)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel("Delete history. Shows the counts first; it cannot be undone.")
+
                 Spacer(minLength: 0)
             }
             .padding(.top, 18)
@@ -265,6 +313,24 @@ private struct BackStrip: View {
 
 // MARK: - Header pieces
 
+/// The header's one mark: an outlined capsule with a word in it. Every chip in
+/// the header is this, so a new one cannot quietly acquire its own weight.
+struct Chip: View {
+    let text: String
+    let tint: Color
+    var stroke: Color = Theme.line2
+
+    var body: some View {
+        Text(text)
+            .text(.label(9.5))
+            .monospacedDigit()
+            .foregroundStyle(tint)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .overlay(Capsule().stroke(stroke, lineWidth: 1))
+    }
+}
+
 /// The map's affordance. It says how many phases there are only when the
 /// server has sent phase records; an empty route says so rather than showing a
 /// count of zero as if that were a measurement.
@@ -272,12 +338,6 @@ private struct PhaseChip: View {
     let count: Int
 
     var body: some View {
-        Text(count > 0 ? "ROUTE · \(count)" : "ROUTE")
-            .text(.label(9.5))
-            .monospacedDigit()
-            .foregroundStyle(Theme.ink3)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .overlay(Capsule().stroke(Theme.line2, lineWidth: 1))
+        Chip(text: count > 0 ? "ROUTE · \(count)" : "ROUTE", tint: Theme.ink3)
     }
 }

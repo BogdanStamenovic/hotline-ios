@@ -105,6 +105,17 @@ struct FleetRow: View {
                                 .text(.label(9.5))
                                 .foregroundStyle(Theme.ink3)
                         }
+                        // **A standing role, drawn as a badge and not as a
+                        // state.** `STALLED` above it is a bare word because it
+                        // is something the agent is doing right now; this is
+                        // outlined because it is something the agent *is*, and
+                        // the two must not read as the same kind of fact. It is
+                        // deliberately nowhere near the status dot: the dot's
+                        // five appearances are a closed vocabulary about
+                        // liveness, and authority is orthogonal to all of them.
+                        if let authority = agent.authorityLabel {
+                            Chip(text: authority, tint: Theme.ink3)
+                        }
                     }
                     // The row says it in words, and the two states never sit
                     // legibly on top of each other.
@@ -169,6 +180,7 @@ struct FleetRow: View {
 
     private var spokenLabel: String {
         var parts = [agent.name]
+        if let authority = agent.authorityLabel { parts.append(authority.lowercased()) }
         switch agent.presence {
         case .blocked:
             if let at = agent.blockedAt {

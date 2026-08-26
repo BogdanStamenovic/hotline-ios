@@ -23,6 +23,8 @@ import SwiftUI
 struct ControlSheet: View {
     let agent: Agent
     let progress: Double
+    /// A finger is on this seam; see `Shell`'s `sheetDragging` and `SeamDrag`.
+    let dragging: Bool
     let busy: String?
     let onDismiss: () -> Void
     let onDispatch: (Capability) -> Void
@@ -56,10 +58,13 @@ struct ControlSheet: View {
                             .ignoresSafeArea(edges: .bottom)
                     )
                     .offset(y: (1 - progress) * geo.size.height)
-                    .gesture(grabber(height: geo.size.height))
+                    .seamDrag(progress: progress,
+                              delta: { -$0.height / max(geo.size.height, 1) },
+                              rate: { -$0.height / max(geo.size.height, 1) },
+                              phase: onDrag)
             }
         }
-        .allowsHitTesting(progress > 0.5)
+        .allowsHitTesting(progress > 0.5 || dragging)
     }
 
     private var panel: some View {
@@ -316,17 +321,6 @@ struct ControlSheet: View {
         .padding(.top, agent.capabilities.isEmpty ? 0 : 4)
     }
 
-    // MARK: - The grabber
-
-    private func grabber(height: Double) -> some Gesture {
-        DragGesture(minimumDistance: 6)
-            .onChanged { value in
-                onDrag(.move(clamp(progress - value.translation.height / max(height, 1), 0, 1)))
-            }
-            .onEnded { value in
-                onDrag(.release(-value.velocity.height / max(height, 1)))
-            }
-    }
 }
 
 /// What the sheet's own recognizer tells `Shell`. Same shape as `ScrubPhase`,
@@ -481,6 +475,8 @@ nonisolated func stateLine(_ agent: Agent) -> String {
 struct BriefSheet: View {
     let capability: Capability?
     let progress: Double
+    /// A finger is on this seam; see `Shell`'s `sheetDragging` and `SeamDrag`.
+    let dragging: Bool
     let busy: Bool
     let onDismiss: () -> Void
     let onSend: (String) -> Void
@@ -552,18 +548,12 @@ struct BriefSheet: View {
                         .ignoresSafeArea(edges: .bottom)
                 )
                 .offset(y: (1 - progress) * geo.size.height)
-                .gesture(
-                    DragGesture(minimumDistance: 6)
-                        .onChanged { value in
-                            onDrag(.move(clamp(progress - value.translation.height
-                                               / max(geo.size.height, 1), 0, 1)))
-                        }
-                        .onEnded { value in
-                            onDrag(.release(-value.velocity.height / max(geo.size.height, 1)))
-                        }
-                )
+                .seamDrag(progress: progress,
+                          delta: { -$0.height / max(geo.size.height, 1) },
+                          rate: { -$0.height / max(geo.size.height, 1) },
+                          phase: onDrag)
             }
         }
-        .allowsHitTesting(progress > 0.5)
+        .allowsHitTesting(progress > 0.5 || dragging)
     }
 }
