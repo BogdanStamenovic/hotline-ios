@@ -180,6 +180,10 @@ struct ChannelLayer: View {
                               phase: onMapDrag)
                     .accessibilityAddTraits(.isButton)
                     .accessibilityLabel("Route. \(channel.route.phases.count) phases.")
+                    // A stable handle for the drive. The label carries a
+                    // phase count, so a test matching on it is matching on
+                    // data; this does not move.
+                    .accessibilityIdentifier("route-chip")
                     .accessibilityAction { onMapDrag(.move(1)); onMapDrag(.release(0)) }
 
                 // **Retention lives here because this is the screen that is

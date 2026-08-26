@@ -226,17 +226,36 @@ final class DriveTests: XCTestCase {
         // The ROUTE chip opens the map by DOWNWARD DRAG, not by tap:
         // progress = dy / viewport * 1.35, so ~74% of the height reaches 1.
         mark("map: drag the ROUTE chip down to open")
-        let chip = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "label BEGINSWITH[c] %@", "Route."))
-            .firstMatch
-        let chipStart: XCUICoordinate
-        if chip.exists {
-            mark("  found the route chip by label: \(chip.label)")
-            chipStart = chip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        } else {
-            mark("  no route chip by label; using the header band coordinate")
-            chipStart = at(0.5, 0.17)
+        // **The blind coordinate fallback is gone, and that is the point.**
+        // On run 32956648279 the chip was not found, the drive fell back to
+        // (0.5, 0.17), and that coordinate opened the *spawn sheet*. The step
+        // logged a line nobody read, every later map step then scrubbed a sheet
+        // that is not the map, and the run went green having never once opened
+        // the screen it claims to exercise -- which is why a map that rendered
+        // nothing at all survived this suite.
+        //
+        // The element was there the whole time: the attached tree for that run
+        // has `Button, label: 'Route. 3 phases.'`. What failed was the query.
+        // `descendants(matching: .any)` with a label predicate does not
+        // reliably resolve against SwiftUI's tree; the chip is a Button, so ask
+        // for a Button. The identifier is the real handle -- the label carries
+        // a phase count, so matching on it is matching on data.
+        let chip = app.buttons["route-chip"].exists
+            ? app.buttons["route-chip"]
+            : app.buttons.matching(NSPredicate(format: "label BEGINSWITH[c] %@", "Route."))
+                         .firstMatch
+        guard chip.exists else {
+            // Loud, and it does NOT drag anything. A step that cannot reach its
+            // target must report that it did not run; dragging somewhere else
+            // and calling it a map test is worse than no coverage, because it
+            // reads as coverage.
+            mark("  NO ROUTE CHIP -- skipping every map step; the map is untested on this run")
+            XCTFail("route-chip not found in the channel; the map steps did not run")
+            attachTree(app, name: "map-tree-missing-chip")
+            return
         }
+        mark("  found the route chip: \(chip.label)")
+        let chipStart = chip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         chipStart.press(forDuration: 0.08,
                         thenDragTo: at(0.5, 0.95),
                         withVelocity: .slow,
