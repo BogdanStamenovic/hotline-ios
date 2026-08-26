@@ -9,39 +9,149 @@ struct OverlayLayer: View {
     let from: CGRect
     let reachable: Reachability
     let toast: Toast?
+    /// APP-PLAN 4.6's 980 ms beat, when he is not looking at the list.
+    let signal: Signal?
+    let onSignalTap: () -> Void
+    let onSignalDismiss: () -> Void
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Color.clear
+            ZStack(alignment: .topLeading) {
+                Color.clear
 
-            // Mounted for the whole transition, in both directions. Gating
-            // this on `nav` would gate it on the *model* value, which
-            // `withAnimation` sets to its target immediately -- so the copy
-            // would never be built on the way in and would linger on the way
-            // out. Its visibility is a term inside `Flight`, where the
-            // interpolated value actually reaches.
-            if let hero, mo != 0, from != .zero {
-                HeroTitle(name: hero.name, e: nav, from: from)
-                    .zIndex(Z.hero)
-            }
+                // Mounted for the whole transition, in both directions. Gating
+                // this on `nav` would gate it on the *model* value, which
+                // `withAnimation` sets to its target immediately -- so the copy
+                // would never be built on the way in and would linger on the way
+                // out. Its visibility is a term inside `Flight`, where the
+                // interpolated value actually reaches.
+                if let hero, mo != 0, from != .zero {
+                    HeroTitle(name: hero.name, e: nav, from: from)
+                        .zIndex(Z.hero)
+                }
 
-            VStack(spacing: 8) {
-                if case .stale(let since, let why) = reachable {
-                    StaleBanner(since: since, why: why)
+                VStack(spacing: 8) {
+                    if case .stale(let since, let why) = reachable {
+                        StaleBanner(since: since, why: why)
+                    }
+                    Spacer(minLength: 0)
+                    if let toast {
+                        ToastView(text: toast.text)
+                            .id(toast.id)
+                            .transition(.opacity.combined(with: .offset(y: 12)))
+                    }
                 }
-                Spacer(minLength: 0)
-                if let toast {
-                    ToastView(text: toast.text)
-                        .id(toast.id)
-                        .transition(.opacity.combined(with: .offset(y: 12)))
-                }
+                .padding(.horizontal, Theme.edge)
+                .padding(.vertical, 10)
+                .animation(.enter, value: reachable)
+                .animation(.enter, value: toast)
             }
-            .padding(.horizontal, Theme.edge)
-            .padding(.vertical, 10)
-            .animation(.enter, value: reachable)
-            .animation(.enter, value: toast)
+            .allowsHitTesting(false)
+
+            // Outside the hit-testing block on purpose: this one is tappable,
+            // and it is the only overlay that is.
+            if let signal {
+                SignalBanner(signal: signal, mo: mo,
+                             onTap: onSignalTap, onDismiss: onSignalDismiss)
+                    .id(signal.id)
+                    .padding(.horizontal, Theme.edge)
+            }
         }
-        .allowsHitTesting(false)
+    }
+}
+
+/// The news, when he is not looking at the list.
+///
+/// Telemetry's banner rather than Prime's coach toast: Prime assumes he is
+/// looking at the fleet, Telemetry assumes he is not, and **both are true at
+/// different times**, so the beat branches on which layer is visible rather
+/// than one concept winning. The banner is chrome rather than a row readout, so
+/// it survives the telemetry scoping of APP-PLAN 5.0.
+struct Signal: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let agent: AgentID
+    let question: String?
+    /// When it started waiting, so the clock in the banner is already running
+    /// when it lands. `nil` when the wire carried no timestamp -- and then there
+    /// is no clock, rather than one started at zero.
+    let since: Date?
+}
+
+/// Drops from the top on `snap`, from -140 to +8. Tap navigates; swipe up
+/// dismisses; it auto-hides at 8 s.
+private struct SignalBanner: View {
+    let signal: Signal
+    let mo: Double
+    let onTap: () -> Void
+    let onDismiss: () -> Void
+
+    @State private var shown = false
+    @State private var lift: Double = 0
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Circle().fill(Theme.sig).frame(width: 6, height: 6).padding(.top, 6)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(signal.agent.uppercased())
+                        .text(.label(10))
+                        .foregroundStyle(Theme.sig)
+                    Spacer(minLength: 0)
+                    if let since = signal.since {
+                        // Already running when it lands: it did not start
+                        // waiting when the banner appeared.
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text(hotlineClock(max(0, context.date.timeIntervalSince(since))))
+                                .text(.label(10))
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.sig)
+                        }
+                    }
+                }
+                Text(signal.question ?? "is waiting on you")
+                    .text(.rowSubtitle)
+                    .foregroundStyle(Theme.ink)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.cardRadius)
+                .fill(Theme.surf)
+                .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius)
+                    .stroke(Theme.sig20, lineWidth: 1))
+        )
+        .offset(y: (shown ? 8 : -140) * mo + lift)
+        .opacity(mo == 0 ? (shown ? 1 : 0) : 1)
+        .contentShape(RoundedRectangle(cornerRadius: Theme.cardRadius))
+        .onTapGesture { onTap() }
+        .gesture(
+            DragGesture(minimumDistance: 8)
+                .onChanged { value in lift = min(0, value.translation.height) }
+                .onEnded { value in
+                    if value.translation.height < -30 || value.velocity.height < -400 {
+                        withAnimation(.navBack) { shown = false }
+                        onDismiss()
+                    } else {
+                        withAnimation(.snap) { lift = 0 }
+                    }
+                }
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(signal.agent) is blocked. \(signal.question ?? "It is waiting on you.")")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onTap() }
+        .task {
+            withAnimation(.snap) { shown = true }
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            withAnimation(.navBack) { shown = false }
+            try? await Task.sleep(for: .milliseconds(280))
+            onDismiss()
+        }
     }
 }
 

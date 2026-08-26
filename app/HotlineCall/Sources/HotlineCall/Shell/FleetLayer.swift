@@ -46,6 +46,18 @@ struct FleetLayer: View {
     @State private var swiped: AgentID?
     @State private var swipeX: Double = 0
     @State private var pullChip: PullChip = .none
+    /// The **presented** top and height of every row, as opposed to the target
+    /// layout `Metrics` computes.
+    ///
+    /// They have to be separate. The re-sort is a beat in APP-PLAN 4.6's
+    /// choreography with its own two springs and its own propagating delays;
+    /// `fleet.order` changing is a model write, and a view that reads it
+    /// directly jumps to the new layout in one frame with no way to stage
+    /// anything. Rows are drawn from here and animated into it explicitly.
+    @State private var placed: [Slot: Placement] = [:]
+    /// Retired agents live in their own collapsed section (APP-PLAN 8.1). Closed
+    /// by default: it is the section for things he has decided not to look at.
+    @State private var retiredOpen = false
 
     /// The distance a pull past an edge must project to before it means
     /// something. Both edges share it so the two gestures feel like one
@@ -55,7 +67,7 @@ struct FleetLayer: View {
     var body: some View {
         GeometryReader { geo in
             let metrics = Metrics(
-                order: fleet.order, fleet: fleet,
+                fleet: fleet, retiredOpen: retiredOpen,
                 viewport: geo.size.height, width: geo.size.width,
                 headerHeight: headerHeight, rowHeight: rowHeight,
                 blockedRowHeight: blockedRowHeight)
@@ -81,6 +93,11 @@ struct FleetLayer: View {
                 settle(to: metrics.clamp(scroll + (edge == .top ? page : -page)),
                        velocity: 0, spring: (520, 46))
             }
+            .onAppear { placed = metrics.targets }
+            // The re-sort beat. `fleet.mover` names the climbing row; everything
+            // else parts around it, and the two springs must not be collapsed
+            // into one (APP-PLAN 4.2).
+            .onChange(of: metrics.signature) { _, _ in restage(metrics) }
             .onChange(of: metrics.minScroll) { _, low in
                 // The roster shrank under us -- a purge, a retire, an agent
                 // that finished. Bring the surface back into bounds rather than
@@ -94,32 +111,93 @@ struct FleetLayer: View {
 
     @ViewBuilder
     private func rows(_ m: Metrics, width: Double) -> some View {
-        let heroIndex = hero.flatMap { m.index(of: $0) }
+        let heroIndex = hero.flatMap { m.index(of: .agent($0)) }
         // Keyed by agent, never by index. Index identity would recycle a row
         // view onto a different agent when the roster reorders -- which is
         // exactly what a blocked agent climbing the list does -- taking that
         // row's animation state with it.
-        ForEach(m.visible(from: scrollAnchor, to: scroll), id: \.self) { id in
-            if let i = m.index(of: id), let agent = fleet[id] {
-                FleetRow(
-                    agent: agent,
-                    height: m.height(at: i),
-                    isHero: hero == id,
-                    swipeX: swiped == id ? swipeX : 0,
-                    nav: nav, mo: mo,
-                    titleFrame: $titleFrames,
-                    onControl: { onControl(agent, $0) })
-                .frame(width: width, height: m.height(at: i), alignment: .topLeading)
-                .staged(role(for: i, heroIndex: heroIndex), nav, mo)
-                .offset(y: m.top(at: i) + scroll)
-                .zIndex(agent.isBlocked ? 1 : 0)
+        ForEach(m.visible(from: scrollAnchor, to: scroll, placed: placed), id: \.self) { slot in
+            let box = placed[slot] ?? m.targets[slot] ?? Placement(top: 0, height: rowHeight)
+            Group {
+                switch slot {
+                case .agent(let id):
+                    if let agent = fleet[id] {
+                        FleetRow(
+                            agent: agent,
+                            height: box.height,
+                            isHero: hero == id,
+                            swipeX: swiped == id ? swipeX : 0,
+                            beats: fleet.beats[id] ?? ArrivalBeats(),
+                            question: fleet.questions[id],
+                            nav: nav, mo: mo,
+                            titleFrame: $titleFrames,
+                            onControl: { onControl(agent, $0) })
+                        .frame(width: width, height: box.height, alignment: .topLeading)
+                        .staged(role(for: m.index(of: slot) ?? 0, heroIndex: heroIndex), nav, mo)
+                    }
+                case .retiredHeader:
+                    RetiredHeader(count: fleet.retired.count, open: retiredOpen)
+                        .frame(width: width, height: box.height, alignment: .leading)
+                }
             }
+            .offset(y: box.top + scroll)
+            // The mover is above everything for the duration of the pass, and
+            // a blocked row is above an ordinary one the rest of the time.
+            .zIndex(zIndex(for: slot))
         }
+    }
+
+    private func zIndex(for slot: Slot) -> Double {
+        guard case .agent(let id) = slot else { return 0 }
+        if fleet.beats[id]?.lifted == true { return 3 }
+        return (fleet[id]?.isBlocked ?? false) ? 1 : 0
     }
 
     private func role(for i: Int, heroIndex: Int?) -> Role {
         guard let heroIndex else { return .row(d: 0) }
         return i == heroIndex ? .heroRow : .row(d: i - heroIndex)
+    }
+
+    // MARK: - The re-sort, as APP-PLAN 4.6's fourth beat
+
+    /// Animate every row from where it is drawn to where it now belongs.
+    ///
+    /// The mover climbs on `climb` (w0 18.4); every other row parts on `float`
+    /// (w0 11.0) with a delay that propagates outward from it -- rows above
+    /// `min(-d, 8) * 26 ms`, rows below `min(d, 8) * 14 ms`. Watching the
+    /// blocked row jump the queue rather than the queue tidily re-sorting is
+    /// the entire point, and a single spring for both destroys it silently.
+    ///
+    /// With no mover -- an ordinary roster change, an agent finishing, a retire
+    /// -- everything snaps together and there is no stagger to read.
+    private func restage(_ m: Metrics) {
+        let targets = m.targets
+        let moverSlot = fleet.mover.map { Slot.agent($0) }
+        let moverIndex = moverSlot.flatMap { m.index(of: $0) }
+
+        // Rows that have gone stop being drawn; rows that are new appear where
+        // they belong rather than flying in from a position they never had.
+        placed = placed.filter { targets[$0.key] != nil }
+        for (slot, box) in targets where placed[slot] == nil { placed[slot] = box }
+
+        for (slot, box) in targets {
+            guard placed[slot] != box else { continue }
+            let animation: Animation
+            if let moverIndex, let index = m.index(of: slot) {
+                if slot == moverSlot {
+                    animation = .climb
+                } else {
+                    let d = index - moverIndex
+                    let delay = d < 0 ? Double(min(-d, 8)) * 0.026 : Double(min(d, 8)) * 0.014
+                    animation = .float.delay(delay)
+                }
+            } else {
+                animation = .snap
+            }
+            withAnimation(mo == 0 ? .easeOut(duration: 0.16) : animation) {
+                placed[slot] = box
+            }
+        }
     }
 
     // MARK: - The pull affordances
@@ -209,7 +287,7 @@ struct FleetLayer: View {
         // there is a visible step under the thumb at the moment of contact.
         drag.scrollAtStart = m.unband(scroll)
         drag.swipeAtStart = swipeX
-        drag.row = m.row(atViewportY: value.startLocation.y, scroll: scroll)
+        drag.row = m.agent(atViewportY: value.startLocation.y, scroll: scroll, placed: placed)
     }
 
     private func lock(_ value: DragGesture.Value, _ m: Metrics) {
@@ -265,9 +343,14 @@ struct FleetLayer: View {
             onSettings()
             return
         }
-        guard let id = m.row(atViewportY: value.startLocation.y, scroll: scroll)
-        else { return }
-        onOpen(id)
+        switch m.slot(atViewportY: value.startLocation.y, scroll: scroll, placed: placed) {
+        case .agent(let id):
+            onOpen(id)
+        case .retiredHeader:
+            withAnimation(.glide) { retiredOpen.toggle() }
+        case nil:
+            break
+        }
     }
 
     private func endSwipe(_ value: DragGesture.Value) {
@@ -389,48 +472,86 @@ enum PullChip: Equatable { case none, refresh, brief }
 
 // MARK: - Layout
 
+/// One thing the list can draw. An enum rather than an `AgentID` because the
+/// retired section's own header occupies a row and has to be hit-tested,
+/// virtualised and placed exactly like everything else.
+enum Slot: Hashable {
+    case agent(AgentID)
+    case retiredHeader
+}
+
+/// Where a row is drawn. Both terms travel together, because the blocked row
+/// grows 88 -> 116 pt *while* it climbs and animating them on two springs would
+/// let the row's bottom edge lead its top.
+struct Placement: Equatable {
+    var top: Double
+    var height: Double
+}
+
 /// Row tops, heights and bounds, recomputed per render from the roster.
 ///
 /// A value type so it can be built in `body` and handed to every helper without
 /// a second source of truth to keep in step -- a row's height depends on
 /// whether it is blocked, and that changes underneath the scroll.
 private struct Metrics {
-    let order: [AgentID]
+    let slots: [Slot]
     let viewport: Double
     let width: Double
     let headerHeight: Double
     let tops: [Double]
     let heights: [Double]
     let contentHeight: Double
+    /// What `placed` is animated towards.
+    let targets: [Slot: Placement]
 
-    init(order: [AgentID], fleet: Fleet, viewport: Double, width: Double,
+    init(fleet: Fleet, retiredOpen: Bool, viewport: Double, width: Double,
          headerHeight: Double, rowHeight: Double, blockedRowHeight: Double) {
-        self.order = order
+        var slots: [Slot] = fleet.order.map { .agent($0) }
+        if !fleet.retired.isEmpty {
+            slots.append(.retiredHeader)
+            // Retired agents keep their live dot in there, because one of them
+            // may still be running: retiring is visibility, not termination.
+            if retiredOpen { slots += fleet.retired.map { .agent($0.name) } }
+        }
+        self.slots = slots
         self.viewport = viewport
         self.width = width
         self.headerHeight = headerHeight
+
         var tops: [Double] = []
         var heights: [Double] = []
+        var targets: [Slot: Placement] = [:]
         var y = headerHeight
-        for id in order {
-            let h = (fleet[id]?.isBlocked ?? false) ? blockedRowHeight : rowHeight
+        for slot in slots {
+            let h: Double
+            switch slot {
+            case .agent(let id): h = (fleet[id]?.isBlocked ?? false) ? blockedRowHeight : rowHeight
+            case .retiredHeader: h = 52
+            }
             tops.append(y)
             heights.append(h)
+            targets[slot] = Placement(top: y, height: h)
             y += h
         }
         self.tops = tops
         self.heights = heights
+        self.targets = targets
         // A run-out below the last row. Without it the last row sits against
         // the home indicator and cannot be swiped without the system gesture
         // taking the touch.
         self.contentHeight = y + 96
     }
 
+    /// Everything a layout change could be. Cheap to compare and it moves on
+    /// exactly the three things that restage the list: which rows exist, in
+    /// what order, at what height.
+    var signature: [Double] { tops + heights + [Double(slots.count)] }
+
     var minScroll: Double { min(0, viewport - contentHeight) }
 
     func height(at i: Int) -> Double { heights[i] }
     func top(at i: Int) -> Double { tops[i] }
-    func index(of id: AgentID) -> Int? { order.firstIndex(of: id) }
+    func index(of slot: Slot) -> Int? { slots.firstIndex(of: slot) }
 
     func clamp(_ v: Double) -> Double { min(max(v, minScroll), 0) }
 
@@ -455,25 +576,36 @@ private struct Metrics {
         return point.x > width - 60 && point.y > top && point.y < top + 48
     }
 
-    func row(atViewportY y: Double, scroll: Double) -> AgentID? {
+    /// Which row a touch landed on, measured against where the row is actually
+    /// **drawn** rather than where it belongs -- a finger that lands on a row
+    /// mid-climb must hit the row it is looking at.
+    func slot(atViewportY y: Double, scroll: Double, placed: [Slot: Placement]) -> Slot? {
         let contentY = y - scroll
-        guard let i = tops.indices.first(where: {
-            contentY >= tops[$0] && contentY < tops[$0] + heights[$0]
-        }) else { return nil }
-        return order[i]
+        for (i, slot) in slots.enumerated() {
+            let box = placed[slot] ?? Placement(top: tops[i], height: heights[i])
+            if contentY >= box.top && contentY < box.top + box.height { return slot }
+        }
+        return nil
     }
 
-    /// Only what can be on screen, plus one row of margin either side. With
-    /// four agents this is free; with four hundred it is the difference
-    /// between a list and a slideshow.
-    func visible(from: Double, to: Double) -> [AgentID] {
+    func agent(atViewportY y: Double, scroll: Double, placed: [Slot: Placement]) -> AgentID? {
+        if case .agent(let id) = slot(atViewportY: y, scroll: scroll, placed: placed) { return id }
+        return nil
+    }
+
+    /// Only what can be on screen, plus one row of margin either side -- and
+    /// anything still travelling, which would otherwise be culled halfway
+    /// through the one animation the list exists to show.
+    func visible(from: Double, to: Double, placed: [Slot: Placement]) -> [Slot] {
         let lo = min(from, to)
         let hi = max(from, to)
-        return tops.indices.filter {
+        return slots.indices.filter {
+            let slot = slots[$0]
+            if let box = placed[slot], box != targets[slot] { return true }
             let low = tops[$0] + lo
             let high = tops[$0] + hi
             return high + heights[$0] > -heights[$0] && low < viewport + heights[$0]
-        }.map { order[$0] }
+        }.map { slots[$0] }
     }
 }
 
@@ -497,6 +629,38 @@ private struct PullLabel: View {
     }
 }
 
+/// The collapsed `Retired (4)` section (APP-PLAN 8.1).
+///
+/// **Nothing about it is styled as destructive.** No `sig`, no warning colour:
+/// retiring destroys nothing, and dressing it up as deletion would make the two
+/// operations look like two strengths of the same thing -- which is precisely
+/// what SERVER-PLAN §3 says the surface must not do.
+private struct RetiredHeader: View {
+    let count: Int
+    let open: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("RETIRED · \(count)")
+                .text(.label(10))
+                .monospacedDigit()
+                .foregroundStyle(Theme.ink3)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Theme.ink3)
+                .rotationEffect(.degrees(open ? 0 : -90))
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Theme.edge)
+        .frame(maxHeight: .infinity, alignment: .center)
+        .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Retired, \(count) agents, \(open ? "expanded" : "collapsed")")
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
 private struct FleetHeader: View {
     let fleet: Fleet
     let reachable: Reachability
@@ -509,17 +673,31 @@ private struct FleetHeader: View {
                 Text("HOTLINE")
                     .text(.wordmark)
                     .foregroundStyle(Theme.ink)
-                Text(counts)
-                    .text(.label(11))
-                    .monospacedDigit()
-                    .foregroundStyle(stale ? Theme.ink4 : Theme.ink3)
-                    .animation(.enter, value: stale)
+                // Beat 0 of an arrival. It sweeps in from the left over the
+                // first 34 % of 1 500 ms, then the origin flips and it collapses
+                // to the right -- one value, so the flip cannot desync from the
+                // scale, and 0 the rest of the time so it occupies no space it
+                // has not been given a reason to.
+                Rectangle()
+                    .fill(Theme.sig)
+                    .frame(height: 2)
+                    .scaleEffect(x: fleet.sweep <= 1 ? fleet.sweep : 2 - fleet.sweep,
+                                 anchor: fleet.sweep <= 1 ? .leading : .trailing)
+                    .frame(height: fleet.sweep > 0 ? 2 : 0)
+                    .accessibilityHidden(true)
+                // The counts catch up at the 820 ms beat, by blur-crossfade,
+                // *after* the row has said what happened.
+                BlurSwap(text: counts) { line in
+                    Text(line)
+                        .text(.label(11))
+                        .monospacedDigit()
+                        .foregroundStyle(stale ? Theme.ink4 : Theme.ink3)
+                        .animation(.enter, value: stale)
+                }
             }
             .padding(.horizontal, Theme.edge)
             .padding(.bottom, 18)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(counts)
 
             // Hit-tested by the surface's own recognizer, not by a `Button`.
             // See `Metrics.settingsHit`.
@@ -542,8 +720,10 @@ private struct FleetHeader: View {
     /// data. The age is the honest readout when archserver is unreachable --
     /// the counts are still true, they are just true about an older moment.
     private var counts: String {
-        let total = fleet.agents.count
-        let blocked = fleet.blockedCount
+        // `fleet.counts`, not `fleet.agents.count`: the numbers are held back
+        // to the 820 ms beat while an arrival is playing.
+        let total = fleet.counts.total
+        let blocked = fleet.counts.blocked
         var out = "\(total) AGENT\(total == 1 ? "" : "S")"
         if blocked > 0 { out += " · \(blocked) BLOCKED" }
         if refreshing || chip == .refresh {

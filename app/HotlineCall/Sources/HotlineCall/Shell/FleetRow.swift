@@ -12,6 +12,13 @@ struct FleetRow: View {
     let height: Double
     let isHero: Bool
     let swipeX: Double
+    /// APP-PLAN 4.6's beats, or a quiet default. A row that is simply blocked --
+    /// because it already was when the app launched -- gets the settled state
+    /// with no sequence, which is why this is a value rather than a flag.
+    let beats: ArrivalBeats
+    /// What it is waiting to be told, when the daemon holds an open
+    /// conversation for it. Absent is normal and renders the task instead.
+    let question: String?
     /// `nav` and `mo`, so the name's hand-off to the travelling copy is a term
     /// in the staging table rather than a comparison against a model value
     /// that jumps to its target the instant the transition starts.
@@ -28,6 +35,11 @@ struct FleetRow: View {
         }
         .frame(height: height, alignment: .topLeading)
         .clipped()
+        // Lifted off the plane for the climb. A row that passes other rows has
+        // to be *above* them, or the pass reads as a rendering glitch.
+        .scaleEffect(1 + 0.014 * beats.lift)
+        .shadow(color: .black.opacity(0.92 * beats.lift),
+                radius: 18 * beats.lift, x: 0, y: 38 * beats.lift)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(spokenLabel)
         .accessibilityAddTraits(.isButton)
@@ -46,12 +58,13 @@ struct FleetRow: View {
         ZStack(alignment: .topLeading) {
             Theme.bg
 
-            if agent.isBlocked {
+            if wash > 0 {
+                // The wash wipes in from the left rather than fading: the row
+                // becomes the thing it is, in a direction, over 640 ms.
                 LinearGradient(colors: [Theme.sig10, .clear],
                                startPoint: .leading, endPoint: .trailing)
-                Rectangle()
-                    .fill(Theme.sig)
-                    .frame(width: 2)
+                    .mask(SideWipe(progress: wash))
+                PinBar(reveal: wash, breathing: agent.isBlocked)
             }
 
             HStack(alignment: .top, spacing: 14) {
@@ -74,10 +87,14 @@ struct FleetRow: View {
                             } action: { rect in
                                 titleFrame[agent.name] = rect
                             }
-                        if agent.isBlocked {
+                        if wash > 0 || beats.words > 0 {
+                            // Rises rather than appears: opacity and 5 pt, on
+                            // the words beat.
                             Text("NEEDS YOU")
                                 .text(.label(9.5))
                                 .foregroundStyle(Theme.sig)
+                                .opacity(tag)
+                                .offset(y: (1 - tag) * 5)
                         }
                         if agent.isStalled {
                             Text("STALLED")
@@ -85,11 +102,15 @@ struct FleetRow: View {
                                 .foregroundStyle(Theme.ink3)
                         }
                     }
-                    Text(subtitle)
-                        .text(.rowSubtitle)
-                        .foregroundStyle(agent.isBlocked ? Theme.sigLift : Theme.ink2)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    // The row says it in words, and the two states never sit
+                    // legibly on top of each other.
+                    BlurSwap(text: subtitle) { line in
+                        Text(line)
+                            .text(.rowSubtitle)
+                            .foregroundStyle(agent.isBlocked ? Theme.sigLift : Theme.ink2)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 }
 
                 Spacer(minLength: 8)
@@ -121,12 +142,25 @@ struct FleetRow: View {
         }
     }
 
-    /// The newest event's text is a `Channel` fact and channels are step 4, so
-    /// until then the row says the truest thing the roster itself carries: why
-    /// it died, or what it was told to do. Nothing here is synthesised.
+    /// A blocked row says the question; a dead one says why it died; everything
+    /// else says what it was told to do. **Nothing here is synthesised** -- an
+    /// agent with no open conversation has no question, and the row falls back
+    /// rather than inventing one.
     private var subtitle: String {
+        if agent.isBlocked, let question, !question.isEmpty { return question }
         if agent.presence == .dead, let reason = agent.deadReason { return reason }
         return agent.task
+    }
+
+    /// The wash and the pin follow the beat while one is running, and the
+    /// settled state otherwise -- an agent that was already blocked at launch
+    /// never had a beat and must still look blocked.
+    private var wash: Double {
+        beats.isQuiet ? (agent.isBlocked ? 1 : 0) : beats.wash
+    }
+
+    private var tag: Double {
+        beats.isQuiet ? (agent.isBlocked ? 1 : 0) : beats.words
     }
 
     private var spokenLabel: String {
@@ -218,6 +252,61 @@ private struct ControlPad: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - The wash and the pin
+
+/// The `sig10` wash's clip, wiping left to right.
+///
+/// `nonisolated` because SwiftUI calls `path(in:)` off the main actor, and
+/// `Animatable` because the whole point is that the boundary *travels*: a
+/// `.frame(width: progress * w)` written directly would read the model value,
+/// which `withAnimation` sets to its target immediately, and the wash would
+/// simply appear.
+nonisolated struct SideWipe: Shape {
+    var progress: Double
+
+    var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX, y: rect.minY,
+                    width: rect.width * clamp(progress, 0, 1), height: rect.height))
+    }
+}
+
+/// The 2 pt pin bar: `scaleY` 0 to 1 over 520 ms with a 120 ms delay, and then
+/// its core breathes on a 2.9 s cycle.
+///
+/// The reveal is driven by the wash beat rather than by its own timer, so the
+/// two cannot drift; the delay is expressed as the fraction of the 640 ms wash
+/// that has to elapse first.
+private struct PinBar: View {
+    let reveal: Double
+    let breathing: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var breath = false
+
+    var body: some View {
+        Rectangle()
+            .fill(Theme.sig)
+            .frame(width: 2)
+            .opacity(breath ? 1 : 0.55)
+            .scaleEffect(y: clamp((reveal - 0.1875) / 0.8125, 0, 1), anchor: .top)
+            .animation(loop, value: breath)
+            .onAppear { breath = breathing && !reduceMotion }
+            .onChange(of: breathing) { _, on in breath = on && !reduceMotion }
+            .accessibilityHidden(true)
+    }
+
+    /// Looping decoration stops entirely under Reduce Motion.
+    private var loop: Animation? {
+        guard breathing, !reduceMotion else { return nil }
+        return .easeInOut(duration: 1.45).repeatForever(autoreverses: true)
     }
 }
 
