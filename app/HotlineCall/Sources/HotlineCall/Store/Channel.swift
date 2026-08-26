@@ -40,6 +40,10 @@ final class Channel {
     private(set) var oldest: Int?
     private(set) var generation = 0
     private(set) var phases: [Phase] = []
+    /// The map's data, rebuilt whenever `moments` changes rather than computed
+    /// in a view: the reconstruction walks every event, and a `body` that did it
+    /// per evaluation would walk 200 rows on every keystroke in the composer.
+    private(set) var route = Route()
     private(set) var samples = SampleRing()
     private(set) var loading: Loading = .cold
     private(set) var hasOlder = false
@@ -52,6 +56,11 @@ final class Channel {
     /// daemon told us about one. `nil` means the composer starts a new
     /// conversation instead of answering an existing one.
     private(set) var answering: String?
+    /// What it asked, and when it started waiting. Both come from
+    /// `/api/v1/conversations` -- the ring opened the conversation server-side,
+    /// so this is the only place the phone can learn either.
+    private(set) var question: String?
+    private(set) var askedAt: Date?
 
     enum Loading: Equatable, Sendable {
         case cold, refreshing, streaming
@@ -161,6 +170,7 @@ final class Channel {
         cursor = snapshot.moments.last?.seq ?? 0
         oldest = snapshot.moments.first?.seq
         samples.seed(rebuiltSamples(from: snapshot.moments))
+        route = HotlineCall.route(from: moments, declared: phases)
     }
 
     /// Step 2: the authoritative window. **Replaces rather than merges**, so a
@@ -198,6 +208,7 @@ final class Channel {
         generation = page.historyGeneration ?? generation
         if let list = page.phases { phases = list }
         samples.seed(rebuiltSamples(from: events))
+        route = HotlineCall.route(from: moments, declared: phases)
         reconcile(events)
         Task { [cache, name, moments, generation] in
             await cache.replace(name, with: moments, generation: generation)
@@ -253,6 +264,9 @@ final class Channel {
         } else {
             moments += arrivals
         }
+        // The route is rebuilt from what is *visible*, so a parked page does
+        // not move the map behind an atomic presentation either.
+        route = HotlineCall.route(from: moments, declared: phases)
         if oldest == nil { oldest = arrivals.first?.seq }
     }
 
@@ -273,6 +287,9 @@ final class Channel {
             oldest = page.oldestSeq ?? events.first?.seq
             hasOlder = page.hasMore
             samples.seed(rebuiltSamples(from: events))
+            // Paging older history extends the waveform leftward and can fill
+            // in the title of a leg the first page began inside.
+            route = HotlineCall.route(from: moments, declared: phases)
         } catch {
             log.error("older \(self.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
@@ -312,6 +329,8 @@ final class Channel {
                 try await link.reply(entry.text, to: conversation)
                 // He answered, so nothing here is blocked on him any more.
                 answering = nil
+                question = nil
+                askedAt = nil
             } else {
                 _ = try await link.say(entry.text, to: name)
             }
@@ -344,9 +363,10 @@ final class Channel {
         guard !conversationsMissing else { return }
         do {
             let open = try await link.conversations()
-            answering = open
-                .filter { $0.isOpen && ($0.agent == nil || $0.agent == name) }
-                .first?.conversation
+            let mine = open.first { $0.isOpen && ($0.agent == nil || $0.agent == name) }
+            answering = mine?.conversation
+            question = mine?.asked
+            askedAt = mine?.opened.map { Date(timeIntervalSince1970: $0) }
         } catch let failure as Link.Failure where failure.isMissingEndpoint {
             conversationsMissing = true
         } catch {
@@ -413,6 +433,7 @@ final class Channel {
         notes.removeAll()
         holdback.removeAll()
         phases.removeAll()
+        route = Route()
         samples = SampleRing()
         cursor = 0
         oldest = nil

@@ -22,6 +22,9 @@ struct ThreadView: View {
     let channel: Channel
     let nav: Double
     let mo: Double
+    /// APP-PLAN 9.7's self-cut, 1 settled. Messages re-enter staggered 52 ms per
+    /// index -- from scratch, every time, which is the quirk that is kept.
+    let cut: Double
     let onRetry: (Channel.Pending.ID) -> Void
     /// APP-PLAN 7.4's `resumed: false` path. It sits with the record of what
     /// happened rather than in a toast, because that is where he will look.
@@ -80,6 +83,10 @@ struct ThreadView: View {
             ForEach(Array(staged.enumerated()), id: \.element.key) { _, row in
                 row.view
                     .staged(.message(k: row.k), nav, mo)
+                    .opacity(cut)
+                    .offset(y: (1 - cut) * 20 * mo)
+                    .animation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.42)
+                        .delay(mo == 0 ? 0 : Double(min(row.k, 8)) * 0.052), value: cut)
             }
         }
         .padding(.horizontal, Theme.edge)
@@ -207,6 +214,12 @@ private struct MomentRow: View {
         case .claude: said
         case .tool: ToolRow(moment: moment)
         case .error: aside(Theme.sig)
+        // The route's own rows. They belong in the thread as well as on the map
+        // -- a phase opening is a real thing that happened in this channel --
+        // but they are chrome here and the map is where they are the subject.
+        case .phase: marker("PHASE", moment.text)
+        case .outcome: marker("OUTCOME", moment.text)
+        case .compact: marker("COMPACT", moment.text)
         case .state, .summary: aside(Theme.ink3)
         }
     }
@@ -229,6 +242,24 @@ private struct MomentRow: View {
             .text(.body)
             .foregroundStyle(Theme.ink)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// A route row. The label is the app's; every word beside it is the
+    /// server's, including the compaction's numbers -- which come out of the
+    /// transcript's own `compact_boundary` record and are never recomputed here.
+    private func marker(_ label: String, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(label)
+                .text(.label(9.5))
+                .foregroundStyle(Theme.ink4)
+            Text(text.isEmpty ? "—" : text)
+                .text(.rowSubtitle)
+                .foregroundStyle(Theme.ink2)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     private func aside(_ tint: Color) -> some View {
