@@ -59,3 +59,16 @@ def bind_hosts(host: str | None = None) -> list[str]:
 def local_url(path: str = "", port_number: int | None = None) -> str:
     """The URL local tooling should use. The single source of the hook's target."""
     return f"http://{LOOPBACK}:{port_number or port()}{path}"
+
+
+def unreachable(requested: list[str], bound: list[str]) -> list[str]:
+    """Requested addresses that are not listening, loopback excluded.
+
+    Split out from the daemon so it is executed by a test rather than asserted
+    by a comment. Loopback is excluded because it is appended by `bind_hosts`
+    rather than asked for, and because it is the one address that effectively
+    cannot fail -- which is precisely the problem this exists to catch:
+    `asyncio.start_server` over a list raises only when *nothing* binds, so a
+    successful loopback bind masks the loss of the address the phone dials.
+    """
+    return [h for h in requested if h != LOOPBACK and h not in bound]

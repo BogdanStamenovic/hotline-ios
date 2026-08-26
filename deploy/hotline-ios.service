@@ -1,0 +1,29 @@
+[Unit]
+Description=hotline-ios daemon (the phone app's server: roster, channels, SIP ring)
+Documentation=file:///home/bodas/data/hotline-ios/docs/SERVER-PLAN.md
+After=network-online.target
+Wants=network-online.target
+# Never give up restarting; see the note by Restart= below.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/home/bodas/data/hotline-ios/server
+# hotline_ios imports hotline's registry; src/ is the package itself.
+Environment=PYTHONPATH=src:/home/bodas/data/hotline/src
+Environment=HOTLINE_IOS_RING=sip
+# Secrets are NOT here on purpose: daemon.py calls load_env() on
+# /home/bodas/data/hotline-ios/.env at startup, so SIP_* and HOTLINE_API_KEY
+# reach os.environ without ever being written into a unit file.
+ExecStart=/home/bodas/data/hotline-ios/server/.venv/bin/python -m hotline_ios.daemon --host 100.72.2.62 --port 8789
+# The bind address is the tailscale IP, which does not exist until tailscaled
+# has come up, so at boot that races. Losing it does not raise -- loopback still
+# binds -- so daemon.py checks the sockets and exits on purpose, and this is
+# what turns that exit into a retry. Do not "clean this up" into
+# Restart=on-failure with a start limit: a slow tailscale would then mean no
+# doorbell until someone notices by hand.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
