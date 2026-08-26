@@ -248,15 +248,21 @@ private struct MomentRow: View {
     /// server's, including the compaction's numbers -- which come out of the
     /// transcript's own `compact_boundary` record and are never recomputed here.
     private func marker(_ label: String, _ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+        // **The kicker sits above the sentence, not in a column beside it.**
+        // As a left-hand label column, PHASE / OUTCOME / COMPACT turned every
+        // route row into a table row, and a screen of table rows reads as a log
+        // file rather than as a conversation -- which is exactly what this
+        // screen stopped looking like. Above the line, the label is a quiet
+        // kicker and the sentence gets the full width it needs, which is the
+        // same rhythm the agent's own messages already have.
+        VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .text(.label(9.5))
                 .foregroundStyle(Theme.ink4)
             Text(text.isEmpty ? "—" : text)
                 .text(.rowSubtitle)
                 .foregroundStyle(Theme.ink2)
-                .lineLimit(2)
-            Spacer(minLength: 0)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
@@ -296,9 +302,12 @@ private struct ToolRow: View {
                 .foregroundStyle(Theme.ink2)
                 .lineLimit(2)
             Spacer(minLength: 6)
-            if let seconds = moment.duration {
-                DurationBar(seconds: seconds)
-            }
+            // **The durations moved to the map.** A millisecond reading down
+            // the right edge of every row is what gave the transcript its
+            // right-hand numeric column, and a numeric column is the thing that
+            // makes a list of sentences read as a table. `duration` is still on
+            // the moment and the route draws it, where per-call timing is the
+            // subject being scanned rather than noise beside a conversation.
         }
         .padding(.leading, moment.viaSubagent ? 18 : 0)
         .opacity(moment.viaSubagent ? 0.62 : 1)
@@ -307,28 +316,6 @@ private struct ToolRow: View {
     }
 }
 
-/// `clamp(log10(1+s)/log10(61), 0, 1) * 44 + 3` pt, straight out of APP-PLAN
-/// 5.3. Log, because a 40 ms `Read` and a 60 s `Bash` have to share one 44 pt
-/// column and a linear scale renders every fast call as the same nothing.
-private struct DurationBar: View {
-    let seconds: TimeInterval
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Capsule()
-                .fill(Theme.ink4)
-                .frame(width: width, height: 3)
-            Text(label)
-                .text(.label(9.5))
-                .monospacedDigit()
-                .foregroundStyle(Theme.ink3)
-        }
-        .accessibilityLabel("took \(label)")
-    }
-
-    private var width: Double { durationBarWidth(seconds) }
-    private var label: String { durationLabel(seconds) }
-}
 
 // MARK: - The optimistic echo
 

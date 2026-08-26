@@ -15,6 +15,11 @@ struct InstrumentStrip: View {
     let channel: Channel
     let nav: Double
     let mo: Double
+    /// The sparkline is the strip's second subject: it answers "how has this
+    /// moved" rather than "what is it now". Over a transcript that is a chart
+    /// competing with the conversation, so the channel header asks for the
+    /// numbers alone and the map -- where time is the axis -- keeps the graph.
+    var showsGraph: Bool = true
 
     @Environment(\.dynamicTypeSize) private var typeSize
     @ScaledMetric(relativeTo: .body) private var sparkHeight: Double = 30
@@ -31,7 +36,7 @@ struct InstrumentStrip: View {
         VStack(alignment: .leading, spacing: 12) {
             if compact { grid } else { row }
 
-            if !compact, !channel.samples.isEmpty {
+            if showsGraph, !compact, !channel.samples.isEmpty {
                 SparklineMark(ring: channel.samples, span: $span, height: sparkHeight)
                     .staged(.stripCell(cells.count), nav, mo)
             }

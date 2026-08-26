@@ -150,12 +150,6 @@ struct ChannelLayer: View {
             }
             .padding(.top, HeroDestination.y)
 
-            Rectangle()
-                .fill(Theme.sig)
-                .frame(width: 120, height: 2)
-                .staged(.accentRule, nav, mo)
-                .padding(.top, 10)
-
             HStack(spacing: 8) {
                 // Pull it down to open the map. `p = dy / height * 1.35`,
                 // and the reveal starts as soon as it is peeking rather than at
@@ -224,9 +218,16 @@ struct ChannelLayer: View {
             // doing, so it is the place the controls belong.
             Button(action: onControls) {
                 HStack(spacing: 8) {
-                    Text(stateLine(agent))
-                        .text(.rowSubtitle)
-                        .foregroundStyle(agent.isBlocked ? Theme.sigLift : Theme.ink2)
+                    // **The one place this screen raises its voice.** Blocked
+                    // means he is the blocker, and that has to read from across
+                    // a room -- so it is the signature colour, uppercase, in the
+                    // tracked label face rather than body grey. Everything else
+                    // on this header stays quiet so that this can be loud; the
+                    // accent rule under the title was spending the same colour
+                    // on decoration and has been removed.
+                    Text(stateLine(agent).uppercased())
+                        .text(.label(10.5))
+                        .foregroundStyle(agent.isBlocked ? Theme.sig : Theme.ink3)
                     ToolDot(flashes: channel.toolFlash)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.system(size: 9, weight: .semibold))
@@ -240,8 +241,15 @@ struct ChannelLayer: View {
             .padding(.top, 10)
             .accessibilityLabel("\(stateLine(agent)). Controls.")
 
-            InstrumentStrip(agent: agent, channel: channel, nav: nav, mo: mo)
-                .padding(.top, 16)
+            // **The readings stay; the graph goes.** A 90-second sparkline
+            // over a transcript is a dashboard sitting on a conversation, and
+            // it pushed the first message a third of the way down the screen.
+            // The route map is where motion over time is the subject, and it
+            // draws the same samples there. Four numbers is context; a chart is
+            // a second subject competing with the thread.
+            InstrumentStrip(agent: agent, channel: channel, nav: nav, mo: mo,
+                            showsGraph: false)
+                .padding(.top, 14)
 
             if case .failed(let why) = channel.loading {
                 // The cached window is still on screen and is still the truest
