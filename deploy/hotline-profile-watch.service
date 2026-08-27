@@ -1,0 +1,11 @@
+# SPEC 6: warn before the free provisioning profile lapses.
+# The failure is silent -- nothing breaks on this box, the icon just stops
+# working in his pocket -- so the warning is the only signal there is.
+
+[Unit]
+Description=warn before the iOS signing profile expires
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/bodas/data/hotline-ios/tools/profile-watch.py --warn-days 3

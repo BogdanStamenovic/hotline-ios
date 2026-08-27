@@ -126,5 +126,14 @@ Two consequences:
 - **A re-sign will not hit this.** The device already exists, so the weekly
   `sideload.sh` re-run has no device to register.
 
-Note the arithmetic while you are here: registered 25 Aug 22:53, profile expires
-1 Sep 22:53. That is the 7-day clock, and it is measured from registration.
+Note the arithmetic while you are here, and note where it goes wrong. The device
+was registered 25 Aug 22:53, and a 7-day clock from there gives 1 Sep 22:53 --
+which is the date this project wrote down everywhere. **It is not the profile's
+expiry.** Apple reports the profile expiring **2 Sep 04:16**, seven days from the
+*install* (26 Aug 04:16), not from the registration. Two different objects with
+two different clocks. Ask Apple rather than deriving it:
+
+    xtool ds profiles list
+
+`tools/profile-watch.py` does exactly that on a daily timer, which is why it
+queries instead of hardcoding.

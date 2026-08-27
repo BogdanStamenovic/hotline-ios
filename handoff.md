@@ -46,7 +46,7 @@ before the profile expires, he answered:
 > "I am comming back on the 9th but i got the arch laptop with me. You can beam
 > it there"
 
-So **he is away until 9 September and the profile expires 1 September 22:53** —
+So **he is away until 9 September and the profile expires 2 September 04:16** —
 he is gone for the entire gap. The workstation cable is off the table. The
 sideload has to run from the laptop that is physically with him
 (`arch`, `100.103.46.118`, reachable passwordless over Tailscale), using
@@ -193,7 +193,8 @@ do not need to re-fetch the artifact), `channel.png` (the after, from CI).
 
 ## 4. Open — waiting on Bogdan, not on code
 
-1. **The provisioning profile expires 1 September 22:53 — five days.** After
+1. **The provisioning profile expires 2 September 04:16** (not 1 Sep 22:53 —
+   see the corrections at the top of this file). After
    that the app stops launching on his phone. **This is the most urgent item in
    this file.**
 

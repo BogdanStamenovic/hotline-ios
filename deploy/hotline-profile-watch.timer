@@ -1,0 +1,10 @@
+[Unit]
+Description=daily check on the iOS signing profile
+
+[Timer]
+OnCalendar=*-*-* 10:00:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

@@ -25,9 +25,11 @@ Files, if you would rather do it by hand:
 Timing — this is the part that matters
 --------------------------------------
 
-The provisioning profile expires **1 September 22:53**, and you are back on the
-**9th**. So the app WILL stop launching for that gap unless you run the command
-above before the 1st. Re-running it renews for another 7 days; it is the same
+The provisioning profile expires **2 September 04:16** -- I asked Apple rather
+than working it out, because the date written in my notes (1 Sep 22:53) was
+derived from the wrong clock and was 5 hours out. You are back on the **9th**.
+So the app WILL stop launching for that gap unless you run the command above
+before the 2nd. Re-running it renews for another 7 days; it is the same
 command every time.
 
 You will NOT hit the "maximum number of registered devices" error that stopped
