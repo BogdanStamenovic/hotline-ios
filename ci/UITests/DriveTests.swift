@@ -399,6 +399,33 @@ final class DriveTests: XCTestCase {
             settle(2.0)
         }
 
+        // ---- 8. rest on a freshly-opened thread -----------------------------
+        //
+        // **Deliberately after the measured drive, and not part of it.**
+        // `out/final.png` is taken by the workflow once the harness has let go,
+        // and it is the only frame captured unconditionally -- the filmstrip is
+        // best-effort and, contending with the video recorder, landed a frame
+        // only every 8 s on run 33088883465. The thread's newest rows went
+        // unphotographed on the very run added to photograph them, because the
+        // drive starts scrolling 3 ms after the channel opens.
+        //
+        // A thread opens scrolled to its newest end, so parking here puts the
+        // agent's latest prose on the one frame that is always taken.
+        mark("rest: re-open a channel so the final frame shows the newest rows")
+        for attempt in 1...2 {
+            if app.buttons["route-chip"].exists { break }
+            if let target = visibleRow(app) {
+                target.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            } else {
+                at(0.5, 0.44).tap()
+            }
+            settle(2.0)
+            if attempt == 2, !app.buttons["route-chip"].exists {
+                mark("  rest: no channel re-opened; the final frame is the fleet")
+            }
+        }
+        settle(2.5)
+
         mark("=== drive ends ===")
         attachTree(app, name: "final-tree")
         attachShot("final-shot")
