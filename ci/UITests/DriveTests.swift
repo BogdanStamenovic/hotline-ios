@@ -611,7 +611,7 @@ final class DriveTests: XCTestCase {
     /// whole firehose, which is the bug the default exists to fix -- so the
     /// absence of a tool row is the load-bearing half.
     private func checkViews(_ app: XCUIApplication) {
-        func labels() -> [String] { app.staticTexts.allElementsBoundByIndex.map(\.label) }
+        func labels() -> [String] { app.staticTexts.allElementsBoundByIndex.map { $0.label } }
         let sentMark = "Deploy is done."
         let toolMark = "pytest"
 
@@ -645,7 +645,7 @@ final class DriveTests: XCTestCase {
         // `first(where:)` spelled out. `Array.first` is also a property, and a
         // trailing closure on the next line binds to that instead -- which is
         // what failed the build on run 33094103028.
-        let labels = app.staticTexts.allElementsBoundByIndex.map(\.label)
+        let labels = app.staticTexts.allElementsBoundByIndex.map { $0.label }
         guard let text = labels.first(where: { $0.contains(head) }) else {
             print("PROSE NOT-FOUND no static text contains the marker")
             return
