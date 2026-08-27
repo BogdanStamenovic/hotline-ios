@@ -1,185 +1,146 @@
-# Handoff — hotline-ios, 27 August 2026 ~11:00 CEST
+# Handoff — hotline-ios, 27 August 2026, ~23:10 CEST
 
-> **UPDATE 27 Aug 16:30 — he installed it. §1 below is superseded.**
->
-> The kit was pushed to his laptop over scp at his own instruction, he ran it,
-> and Apple issued a **new profile at 27/08 16:24 expiring 3 September 16:24**.
-> The 2 September 04:16 date in §1 is dead. He is still away until 9 September,
-> so the gap is real but one day later and far cheaper to close: the kit is on
-> his laptop and `xtool auth` there is **logged in with a token valid to Aug
-> 2027**, so re-signing is `cd ~/hotline && ./sideload.sh` with the cable — no
-> download, no tailnet, no 2FA. See `deploy/laptop-push-NOTE.md`.
+Written against a possible midnight shutdown. **It is recoverable and that is
+verified, not assumed:** `wakeonlan a8:a1:59:fd:4d:13` from pigion or his phone,
+WoL proven end to end earlier today. Do not rush anything out ahead of it.
 
-Written under a shutdown order, as the last one was. The previous session's
-handoff is preserved at `docs/HANDOFF-2026-08-27-0220.md` — **its §6 "Traps" is
-still the best thing in this repo and worth reading in full.** Everything else
-in it should be read through the corrections below.
-
-Repo `main`, everything pushed. Shutdown is recoverable: WoL is reported
-verified, `wakeonlan a8:a1:59:fd:4d:13`.
+The previous handoff is `docs/HANDOFF-2026-08-27-1100.md`. Its §2 corrections
+and the older `docs/HANDOFF-2026-08-27-0220.md` §6 "Traps" are both still worth
+reading in full. Everything below supersedes their §1.
 
 ---
 
-## 1. The one thing that matters
+## 1. Dates, corrected twice today
 
-**The app's signing profile expires 2 September 04:16. He is away until
-9 September.** He is gone for the entire gap, so unless he re-signs from the
-laptop travelling with him, the app stops launching on his phone and stays dead
-for a week.
-
-Everything needed for that is built, served and rehearsed. His whole job is one
-command on the laptop, phone plugged in and unlocked:
-
-    curl -fsSL http://100.114.148.69:8790/get.sh | bash
-
-**That address is pigion, not archserver, and the distinction is the point.**
-archserver builds the `.ipa` and serves it too — and archserver gets powered
-off, which would take the install route down with it. pigion has been up five
-weeks with linger on, so it holds the durable copy; `get.sh` probes both, so a
-sleeping archserver costs nothing. `deploy/pigion-beam-NOTE.md` has the
-publish-a-new-build steps; **the mirror is deliberately not automatic.**
-
-He has been told three times, including a correction after I twice gave him the
-archserver URL. `hotline-profile-watch.timer` pages him daily from 30 August —
-but note that timer runs *here*, so if this box stays off, that warning does not
-fire. pigion serving the kit is what makes the plan survive the shutdown; the
-reminder does not.
-
-**Do not re-derive that date.** The 1 September 22:53 written all over this repo
-was wrong — it was seven days from when the *device* was registered, but the
-profile's clock starts at *install*. Ask the authority:
+**The profile expires 3 September 16:24. He returns 9 September.** The 2
+September 04:16 in older docs is dead: the seven days run from *install*, and he
+installed at 16:24 today, which restarted the clock. Ask the authority, never
+re-derive:
 
     /mnt/iosbuild/toolchain/xtool.AppImage ds profiles list
 
-## 2. Three things the last handoff asserted that are false
+**The re-sign is now cheap.** The kit is on his laptop at `~/hotline` (tailnet
+host `arch`, 100.103.46.118 — *not* the host called `laptop`, which is a
+different Windows box). `xtool auth` there is logged in with a token good to
+**August 2027**, so it costs no password and no 2FA:
 
-Checked, not reasoned about:
+    cd ~/hotline && ./sideload.sh          # phone on the cable, unlocked
 
-1. **"I cannot compile Swift on this box."** The toolchain is here and works.
-   Swift 6.2.3 plus the 3.1 GB Darwin SDK on the ext4 loop image at
-   `/mnt/iosbuild`, in `/etc/fstab`, mounted. A clean `.ipa` builds in **8.5 s**
-   from scratch, 3.4 s incrementally:
+`HotlineCall-prev.ipa` sits beside it — byte-identical to what is on his phone —
+so a rollback is a local `cp`, no network. It is deliberately absent from
+`SHA256SUMS`, because `get.sh` runs `sha256sum -c` over that file.
 
-       source /mnt/iosbuild/env62.sh
-       cd app/HotlineCall && /mnt/iosbuild/toolchain/xtool.AppImage dev build --ipa
+`wake-archserver-for-profile.timer` on pigion fires WoL on five mornings around
+the expiry so this box's watcher can page him. Best-effort: the BIOS half of WoL
+is still unproven.
 
-   `docs/BUILDING.md` documented this the whole time, *including* the trap that
-   produced the false claim: `swift` is not on `PATH` until `env62.sh` is
-   sourced, so "command not found" reads as "no toolchain". **You are not
-   writing blind and you do not need a 13-minute CI round to typecheck.**
+## 2. Live on his phone right now, no reinstall needed
 
-2. **"xtool needs a system-wide install, so it needs his yes."** No system-wide
-   install exists — it is an AppImage — and it was already on the box at
-   `/mnt/iosbuild/toolchain/xtool.AppImage`. The item held overnight for his
-   approval was never blocked on him.
+Both are server-side, both confirmed by him or against the running daemon:
 
-3. **The 403 device-limit failure is resolved, not open.** His iPhone 15 Pro is
-   registered and `ENABLED` under team `3GAQP72Y5Z`. **Do not act on the
-   "second Apple ID" option in `docs/DEVICE-LIMIT.md`** — it is not needed and
-   would cost him an account for nothing.
+- **Prose arrives whole.** Assistant text was never stored; it reached the phone
+  only as the phase `outcome`, which is one-lined to 240 characters because it
+  is the *map's leg caption*. Any prose before a turn's last block was dropped
+  outright. He confirmed the fix on his own phone: "it's a lot better this way".
+- **The Discord bridge.** `hotline`'s pager mirrors a deliberate message to the
+  app as well as Discord, as its own `sent` kind. Best-effort, cannot break the
+  Discord path; failures counted to a state file and surfaced as
+  `mirror_degraded` on hotline's `/health` (port 8788), detail on
+  `/api/v1/mirror` behind the key.
 
-## 3. What this session built
+## 3. Built, tested, and deliberately NOT shipped
 
-- **`hotline-beam.service`** serves the sideload kit from `/mnt/iosbuild/beam`
-  on `100.72.2.62:8790` (tailscale address only, not the LAN).
-  **Pull, not push, and that is the design, not a convenience.** I tried to
-  `scp` the kit to the laptop and it died mid-transfer: the laptop travels with
-  him and drops off the tailnet without warning. A pull runs when his side is
-  up, which is the only side that can decide that.
-- **`tools/beamd.py`** instead of `python -m http.server`, because that one
-  answers a Range request with the *whole file*, so `curl -C -` restarts from
-  zero and a 54 MB signer never lands on a link that keeps dropping. Verified:
-  a truncated 5 MB `.ipa` resumes through it to a byte-identical md5.
-- **`tools/profile-watch.py` + timer** — SPEC §6's expiry warning, which had
-  never been built. Queries Apple daily, pages him under 3 days. Both directions
-  exercised.
-- **The wire tests now run against the live daemon**, and that turned up the
-  bug in §4.
-- **The kit mirrored to pigion**, and `~/bin/wake-archserver` on pigion — a
-  dependency-free magic packet, since pigion is the only always-on box on this
-  LAN (192.168.1.8 to .139).
+The two-view app change: the thread defaults to his conversation (`sent` + his
+own messages) with the transcript behind a button, and the header row is
+rethought rather than grown. **He chose that default with the emptiness warning
+in front of him**, so it is not softened and no old row is backfilled.
 
-### WoL, verified further than it was, and still not all the way
+**The `.ipa` is held because of §4.** That is the right call at 23:55 as much as
+at 20:00: a build whose new button may not respond is worse than no build, and
+he already has a working app.
 
-The older notes call this armed-but-unproven. It is now: NIC reports
-`Wake-on: g`, `wol-enp4s0.service` re-arms at boot, and a correctly formed
-102-byte packet from pigion was confirmed **received** on this box's udp/9
-(root python listener; tcpdump is not installed and one packet did not justify
-a package). **The BIOS half remains unproven** — ErP must be disabled or the
-NIC gets no standby power, and only a real power-off settles that. Plan for it
-working, do not bet the kit on it: that is why the kit is on pigion.
+## 4. THE OPEN BUG — read this before touching the header
 
-## 4. The bug worth remembering
+**The FULL TRANSCRIPT toggle does not fire.** Measured on a running simulator,
+not inferred:
 
-`app/wiretest/run.sh` wrote its history refresh to `fixtures/live-history.json`
-while every sibling wrote `today-*`. The `live-*` set is deliberately frozen at
-an **older** daemon's shape — it is the only thing proving the app degrades
-gracefully when `phases` is absent. So every live run silently overwrote the
-evidence, and the degradation checks would have kept passing against
-current-shape bytes: **green, and measuring nothing.**
+    frame 107,215 114x21 inside a 420x912 window
+    isHittable = false
+    plain tap: nothing.  coordinate tap: nothing.
 
-That is the same failure the last handoff's §8 is about, and it had been sitting
-in the test harness the whole time. Fixed, plus the current history shape is now
-tested at all, which it never was.
+Ruled out by reading: `chrome` leaves hitTesting default and its offset is zero
+at rest; `.channel` is `hitTesting: e > 0.55`, true at rest; `BackStrip` is 44 pt
+wide (the full width it receives is only the divisor in its drag maths); the
+query resolves and returns the right label; the route chip in the same row takes
+a drag. Geometry is dead — the frame is on screen.
 
-The other failure that run surfaced was honest but stale: a check asserted no
-event carries `duration_ms`. The daemon now sends it. Absence was a snapshot,
-never an invariant — it now asserts that whatever arrives decodes.
+**Last action taken:** the header controls are now `Button`s instead of `Chip` +
+`.onTapGesture` (commit `c3579a9`), which is a fix and a diagnosis at once. **A
+CI run for it was in flight when this was written — read its result first.**
 
-**257/257 against the live daemon.**
+**`RETIRE` and `DELETE HISTORY` carried the identical pattern.** If the tap never
+fired for them, they have been dead since they shipped. **This is a hypothesis
+with NO reading yet** — the run before last died mid-drive. Do not repeat it as
+fact; he has already been told it is unconfirmed.
 
-## 5. Open, and genuinely blocked on him
+If it holds, the urgency is the opposite of what it looks like: what he lost is
+the *ability* to delete, not protection from deleting. `Purge.swift` already
+requires a 1500 ms hold against server counts it re-checks immediately before
+the destructive call, so a working tap opens a confirmation and destroys
+nothing.
 
-1. **The re-sign.** §1. Nothing more I can do; the cable and his Apple ID 2FA
-   are the wall, and it is the right wall.
-2. **`gh repo delete BogdanStamenovic/darwin-sdk-build`** still needs
-   `gh auth refresh -h github.com -s delete_repo` from him. Unchanged for three
-   handoffs; low value, do not spend a page on it alone.
-3. **The decide card's A/B option rows** need a server change — `Waiting`
-   (`Wire.swift:351`) carries `asked: String?` and no options array. Inventing
-   two would be fiction on the one screen whose job is extracting a real
-   decision.
-4. **The three header chips** vs the mockup's one pill. Left deliberately: he
-   asked for somewhere to retire and delete. His call.
-5. **The two-tap-to-open behaviour.** Real on his phone. I flagged it in the
-   served README and asked; he has not answered.
+## 5. How to see the app without a GitHub token
 
-## 6. What I could not do, stated plainly
+The `gh` token on this box is **invalid** and `gh auth login` needs a browser.
+Artifacts are therefore unreachable. Do not waste an hour rediscovering that.
 
-- **Nothing this session has been on his phone**, and nothing can be until he
-  runs the command. The build on the device is still 26 Aug 04:16 and has none
-  of the conversation-screen redesign.
-- **Device-side jank measurement remains undone** and is now impossible until at
-  least 9 September — the phone is with him. The CI work settled that the *CI
-  measurement* was broken, not that the app is smooth on real hardware. Do not
-  let the "at or below the floor" verdict be read as the latter.
-- **I never ran the app.** Local builds compile and the wire tests execute real
-  app code on Linux, but nothing renders a view outside the macOS simulator.
+- CI pushes screenshots to an orphan **`ci-shots`** branch, fetched over SSH,
+  which works. `git fetch origin ci-shots --force && git show origin/ci-shots:RUN.txt`
+- `RUN.txt` carries the drive's MARK timeline, the `VIEW`/`PROSE` readings,
+  **build errors and test failures**. Those last two were added because a
+  compile error and a dead drive were each invisible to the one machine that
+  could fix them.
+- **The unauthenticated GitHub API is 60 requests/hour.** Polling `gh run list`
+  every 30 s exhausts it and runs then report as "not-listed", which looks
+  exactly like a workflow that never triggered. Poll by fetching `ci-shots` and
+  comparing the `commit` line in `RUN.txt` instead.
 
-## 7. Machine state
+## 6. What kept going wrong, because it will again
 
-**archserver:** `hotline-ios`, `hotline-beam`, `hotline-profile-watch.timer`,
-`hotlined` — all active and enabled, linger on. `/mnt/iosbuild` mounted. The
-served `.ipa` is byte-identical to a clean build of `main` and its published
-SHA256 verifies over HTTP.
+Four separate "findings" today were the instruments, not the app: a filmstrip
+that never pointed at the thread; `final.png`, which is taken after teardown and
+photographs a dead app; a view check that passed because the fixture contained
+no prose to hide; and a substring that matched a fleet row behind the channel
+because `app.staticTexts` is the whole tree, not the screen.
 
-**pigion** (`100.114.148.69`, up 5 weeks, linger on): `hotline-beam.service`
-enabled and active, serving `~/hotline-beam` on the tailnet address only. Same
-`.ipa`, same SHA256, range/resume confirmed, and the one command rehearsed
-end to end under a clean `HOME` — it stops exactly at the device wall, before
-asking for credentials. `~/bin/wake-archserver` is there too.
+That is §6's own trap — an element is in the tree whether or not it is on the
+screen — reappearing in the measuring layer. **When a machine can tell you, make
+it tell you.** The two changes that broke the cycle were putting the compiler
+error and the failure reason into `RUN.txt`.
 
-To undo the pigion side entirely: `systemctl --user disable --now hotline-beam`
-and delete `~/hotline-beam` and `~/bin/wake-archserver`.
+## 7. Two open items that are real
 
-**If `/mnt/iosbuild` is empty after a boot, the mount is down, not the toolchain
-gone.** `findmnt /mnt/iosbuild || sudo systemctl start mnt-iosbuild.mount`.
+- **`docs/INGEST-REPLAY.md`.** Ingest is not transactional: rows are committed
+  and only then is the read offset advanced, so a crash or SIGTERM replays a
+  slice, and the offset-past-EOF branch re-reads the whole transcript on
+  purpose. `claude` events are guarded on `(agent, kind, at, text)`. `tool`,
+  `phase`, `outcome`, `compact` are **not**. It has a guard, it is not fixed —
+  do not let it drift into "handled".
+- **The suite once wrote to his live app.** `mirror_sent` defaults to loopback,
+  which here is his real daemon, and the pager's tests put 16 fixture strings
+  into it. Removed. `conftest` now sets `HOTLINE_MIRROR=0` suite-wide and
+  `tests/test_no_live_mirror.py` fails if that is ever dropped.
 
-## 8. One thing worth keeping
+## 8. Machine state
 
-The last handoff ended on: *a field read as a signal without testing what it
-actually indicates.* Every single thing I found today was that again — "swift:
-command not found" read as no toolchain, a device list read as a quota, a
-derived date read as the expiry, and a test fixture being overwritten by the
-harness meant to protect it. None of them were hard to check. They were just
-never checked, because each one already looked like an answer.
+`hotline-ios`, `hotlined`, `hotline-beam`, `hotline-profile-watch.timer` all
+active. `/mnt/iosbuild` mounted — if it looks empty after a boot the mount is
+down, not the toolchain gone: `findmnt /mnt/iosbuild || sudo systemctl start
+mnt-iosbuild.mount`. Build with `source /mnt/iosbuild/env62.sh` first, or
+`swift` is not on PATH and it reads as a missing toolchain.
+
+Tests: 484 hotline, 210 hotline-ios server, 272 wire. All green.
+
+Both repos pushed and clean. **The `hotline` repo holds someone else's
+uncommitted work** in `PROGRESS.md`, `handoff.md`, `provenance.py`, `router.py`
+and `test_provenance.py` — stage by path there, never `git add -A`.
