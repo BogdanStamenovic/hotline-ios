@@ -944,6 +944,54 @@ do {
     check(future.isSysAdmin == false, "without claiming to be the one role the app knows")
 }
 
+section("A deliberate send is not transcript prose")
+
+do {
+    // The thread's default view is built from `isConversation` and nothing
+    // else, so what that predicate answers for each kind IS the feature.
+    let sent = try decoder.decode(Moment.self, from: """
+    {"seq":5,"kind":"sent","text":"Deploy is done. Nothing needs you.","at":1787849362.5}
+    """.data(using: .utf8)!)
+    check(sent.kind == .sent, "`sent` decodes as its own kind")
+    check(sent.isConversation, "and it is part of the conversation")
+    check(!sent.isFromHim, "but it is not from him -- the agent said it")
+    check(sent.phase == nil, "a deliberate message belongs to no phase")
+
+    let prose = try decoder.decode(Moment.self, from: """
+    {"seq":6,"kind":"claude","text":"thinking out loud","at":1787849362.5}
+    """.data(using: .utf8)!)
+    check(!prose.isConversation,
+          "**`claude` is NOT** -- prose is what it was saying while it worked, "
+          + "and collapsing the two is the whole thing this kind exists to avoid")
+
+    let mine = try decoder.decode(Moment.self, from: """
+    {"seq":7,"kind":"you","text":"go ahead","at":1787849362.5}
+    """.data(using: .utf8)!)
+    check(mine.isConversation, "his own messages are the other half of it")
+
+    for raw in ["tool", "phase", "outcome", "compact", "state", "summary", "error"] {
+        let other = try decoder.decode(Moment.self, from: """
+        {"seq":8,"kind":"\(raw)","text":"x","at":1787849362.5}
+        """.data(using: .utf8)!)
+        check(!other.isConversation, "`\(raw)` stays behind FULL TRANSCRIPT")
+    }
+} catch {
+    check(false, "the sent kind decodes: \(error)")
+}
+
+do {
+    // Forward compatibility in the other direction: a build that predates
+    // `sent` must not drop the row. `Kind.init(from:)` falls back to `summary`,
+    // so an older app shows it as an aside rather than losing the message.
+    let raw = """
+    {"seq":9,"kind":"telepathy","text":"from a daemon newer than this app","at":1.0}
+    """
+    let unknown = try decoder.decode(Moment.self, from: raw.data(using: .utf8)!)
+    check(unknown.kind == .summary, "an unknown kind still decodes, as an aside")
+    check(unknown.text == "from a daemon newer than this app",
+          "and keeps its text, so nothing a newer server says is silently lost")
+}
+
 // ---------------------------------------------------------------------------
 print("\n\(checks - failures)/\(checks) checks passed")
 exit(failures == 0 ? 0 : 1)

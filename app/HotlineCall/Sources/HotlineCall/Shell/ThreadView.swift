@@ -20,6 +20,15 @@ import SwiftUI
 /// more per explicit pull.
 struct ThreadView: View {
     let channel: Channel
+    /// **False shows only the conversation**, which is the default he asked
+    /// for: messages an agent deliberately sent him, and his own replies.
+    /// True is the whole transcript -- prose, tool calls, phase markers.
+    ///
+    /// He chose this default with the consequence in front of him: no message
+    /// sent before 27 Aug was ever mirrored, so old channels open nearly empty.
+    /// That is not softened here and old rows are not backfilled to disguise
+    /// it. It is made *legible* instead -- see `emptyNote`.
+    let full: Bool
     let nav: Double
     let mo: Double
     /// APP-PLAN 9.7's self-cut, 1 settled. Messages re-enter staggered 52 ms per
@@ -72,8 +81,31 @@ struct ThreadView: View {
 
     // MARK: - Rows
 
+    /// **An empty default view has to look deliberate, not broken.**
+    ///
+    /// Nothing sent before the mirror existed was recorded, so a channel with
+    /// plenty of history can have nothing to show here. A blank pane reads as
+    /// a failure to load; this says which it is and where the rest went.
+    private var emptyNote: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("NOTHING SENT YET")
+                .text(.label(9.5))
+                .foregroundStyle(Theme.ink4)
+            Text("This shows messages this agent chose to send you, and your "
+                 + "replies. It has not sent one yet. Everything it has been "
+                 + "doing is under FULL TRANSCRIPT.")
+                .text(.rowSubtitle)
+                .foregroundStyle(Theme.ink2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
+    }
+
     private var rows: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if !full, staged.isEmpty, channel.loading != .cold { emptyNote }
             if channel.hasOlder {
                 Text("PULL FOR OLDER")
                     .text(.label(9.5))
@@ -119,6 +151,7 @@ struct ThreadView: View {
         var out: [Row] = []
         let answered = self.answered
         for moment in channel.moments {
+            guard full || moment.isConversation else { continue }
             // Yield to the prose only where the prose is actually there. An
             // outcome with no phase id cannot be matched to one, so it is kept:
             // showing a caption twice is recoverable, losing an answer is not.
@@ -259,6 +292,11 @@ private struct MomentRow: View {
         switch moment.kind {
         case .you: bubble
         case .claude: said
+        // A deliberate message reads as prose, because that is what it is. It
+        // is not decorated as special: in the default view it is the *only*
+        // thing on screen besides his own replies, so a badge saying "this one
+        // was meant for you" would be on every row.
+        case .sent: said
         case .tool: ToolRow(moment: moment)
         case .error: aside(Theme.sig)
         // The route's own rows. They belong in the thread as well as on the map

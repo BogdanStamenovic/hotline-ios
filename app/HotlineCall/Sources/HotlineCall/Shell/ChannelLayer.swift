@@ -39,10 +39,18 @@ struct ChannelLayer: View {
     /// APP-PLAN 8.2. Opens `PurgeSheet` on the whole history -- the same sheet
     /// and the same hold the control sheet and the map's cursor reach.
     let onPurge: () -> Void
+    /// Which of the two views the thread is in, and how to swap them. Owned by
+    /// `Shell` so it survives this layer being rebuilt on every arrival.
+    let full: Bool
+    let onToggleFull: () -> Void
     let onAnswer: (String) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// 1 settled. Driven to 0 and back on every `cut`.
+    /// The disclosure for the two actions that change the agent rather than
+    /// the view. Local: it is a momentary state, and it must close itself when
+    /// the channel does.
+    @State private var more = false
     @State private var arrival: Double = 1
     /// Held so a second cut supersedes the first rather than racing it to write
     /// `arrival`, and so a torn-down layer does not leave one running.
@@ -55,7 +63,7 @@ struct ChannelLayer: View {
 
                 VStack(alignment: .leading, spacing: 0) {
                     header(viewport: geo.size.height)
-                    ThreadView(channel: channel, nav: nav, mo: mo, cut: arrival,
+                    ThreadView(channel: channel, full: full, nav: nav, mo: mo, cut: arrival,
                                onRetry: { channel.retry($0) },
                                onContinue: onContinue)
                         .frame(maxHeight: .infinity)
@@ -180,36 +188,70 @@ struct ChannelLayer: View {
                     .accessibilityIdentifier("route-chip")
                     .accessibilityAction { onMapDrag(.move(1)); onMapDrag(.release(0)) }
 
-                // **Retention lives here because this is the screen that is
-                // about one agent.** It was reachable only from the control
-                // sheet behind the state line and from a long press inside the
-                // map, and he could not find either -- both are gestures onto
-                // things that do not look like they lead anywhere. These are
-                // labelled, they are two taps from the fleet list, and they sit
-                // beside the other chip on the only screen where "this history"
-                // is unambiguous.
+                // **The row he asked to have rethought, not grown.**
                 //
-                // The two look nothing alike, per APP-PLAN 8: retire is a plain
-                // outline in ordinary ink and commits on the tap because it
-                // destroys nothing, and delete is `sig` and opens the count
-                // sheet, which is where the hold and the real numbers are.
-                Chip(text: agent.isRetired ? "UNRETIRE" : "RETIRE", tint: Theme.ink3)
-                    .staged(.phaseChip, nav, mo)
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: onRetire)
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityLabel(agent.isRetired
-                                        ? "Retired. Tap to put it back in the fleet."
-                                        : "Retire. It keeps running; you stop seeing it in the fleet.")
+                // It held ROUTE, RETIRE and DELETE HISTORY as three peers, and
+                // he pushed back on it twice -- once against the mockup's
+                // single pill, and again when the obvious way to add his FULL
+                // TRANSCRIPT button was to make it four. Two things were wrong
+                // with it beyond the count. DELETE HISTORY is irreversible and
+                // was sitting shoulder to shoulder with two ways of *looking*
+                // at things, which gives a destructive action the same weight
+                // as navigation. And the control he now uses constantly had
+                // nowhere to go.
+                //
+                // So: the two things you do to *read* this agent stay in the
+                // row -- the route, and which of the two views you are in. The
+                // two things that *change* it move behind one disclosure. Same
+                // number of chips as before, the new button included, and the
+                // destructive one is no longer a peer of anything.
+                //
+                // Retention is NOT going back into the controls sheet. It lived
+                // there and behind a long press in the map, and he could not
+                // find either; that is why it was pulled out here in the first
+                // place. One labelled tap on this screen is not that.
+                if more {
+                    // Kept from APP-PLAN 8: the two look nothing alike. Retire
+                    // is a plain outline in ordinary ink and commits on the tap
+                    // because it destroys nothing. Delete is `sig` and opens the
+                    // count sheet, which is where the hold and the real numbers
+                    // are.
+                    Chip(text: agent.isRetired ? "UNRETIRE" : "RETIRE", tint: Theme.ink3)
+                        .staged(.phaseChip, nav, mo)
+                        .contentShape(Rectangle())
+                        .onTapGesture { onRetire(); more = false }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityLabel(agent.isRetired
+                                            ? "Retired. Tap to put it back in the fleet."
+                                            : "Retire. It keeps running; you stop seeing it in the fleet.")
 
-                Chip(text: "DELETE HISTORY", tint: Theme.sig, stroke: Theme.sig20)
-                    .staged(.phaseChip, nav, mo)
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: onPurge)
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityLabel("Delete history. Shows the counts first; it cannot be undone.")
+                    Chip(text: "DELETE HISTORY", tint: Theme.sig, stroke: Theme.sig20)
+                        .staged(.phaseChip, nav, mo)
+                        .contentShape(Rectangle())
+                        .onTapGesture { onPurge(); more = false }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityLabel("Delete history. Shows the counts first; it cannot be undone.")
+                } else {
+                    Chip(text: full ? "MESSAGES" : "FULL TRANSCRIPT", tint: Theme.ink3)
+                        .staged(.phaseChip, nav, mo)
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: onToggleFull)
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityIdentifier("view-chip")
+                        .accessibilityLabel(full
+                                            ? "Showing the full transcript. Tap for messages only."
+                                            : "Showing messages only. Tap for the full transcript.")
+                }
 
                 Spacer(minLength: 0)
+
+                Chip(text: more ? "DONE" : "\u{22EF}", tint: Theme.ink4)
+                    .staged(.phaseChip, nav, mo)
+                    .contentShape(Rectangle())
+                    .onTapGesture { withAnimation(.settle) { more.toggle() } }
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityIdentifier("more-chip")
+                    .accessibilityLabel(more ? "Done" : "More: retire, delete history")
             }
             .padding(.top, 18)
 

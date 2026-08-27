@@ -864,3 +864,25 @@ async def test_a_replayed_slice_does_not_post_the_prose_twice(claude_home, doubl
 
     again = [e.text for e in service.store.since(name, 0) if e.kind == "claude"]
     assert again == [long], f"prose duplicated on replay: {len(again)} copies"
+
+
+async def test_a_deliberate_send_is_stored_apart_from_transcript_prose(claude_home, doubles):
+    """`sent` and `claude` are different claims and stay different rows.
+
+    A `claude` row is whatever the agent was saying as it worked. A `sent` row
+    is a message it chose to deliver -- the same bytes that went to Discord.
+    The phone's default view shows only the second, so the two cannot share a
+    kind.
+    """
+    name = declared(doubles)
+    service = Service(LoopbackTransport(), FakePool())
+
+    answer = service.sent(name, "Deploy is done. Nothing needs you.")
+    assert answer["ok"] and answer["seq"] > 0
+
+    events = service.store.since(name, 0)
+    rows = [(e.kind, e.text, e.phase_id) for e in events if e.kind == "sent"]
+    assert rows == [("sent", "Deploy is done. Nothing needs you.", None)]
+
+    # Not filed under a phase: a deliberate message is not a step in a turn.
+    assert all(e.phase_id is None for e in events if e.kind == "sent")

@@ -199,6 +199,15 @@ nonisolated struct Moment: Identifiable, Hashable, Sendable, Codable {
     nonisolated enum Kind: String, Sendable, Hashable, Codable {
         case you        // what he sent
         case claude     // what the agent answered
+        /// **A message the agent chose to send him** -- the same bytes that
+        /// went to Discord, mirrored by `hotline`'s pager.
+        ///
+        /// Deliberately not `claude`. A `claude` row is transcript-derived: it
+        /// is what the agent was saying while it worked, and it arrives whether
+        /// or not anyone was meant to read it. A `sent` row is addressed to
+        /// him. The thread's default view shows only these and his own
+        /// messages, so the two cannot share a kind.
+        case sent
         case tool       // what it is running
         case summary
         case state
@@ -239,6 +248,14 @@ nonisolated struct Moment: Identifiable, Hashable, Sendable, Codable {
 
     var id: Int { seq }
     var isFromHim: Bool { kind == .you }
+
+    /// Is this part of the conversation, as opposed to the record of the work?
+    ///
+    /// The thread's default view is built from this and nothing else. `sent` is
+    /// what an agent chose to tell him; `you` is what he said back. Everything
+    /// else -- prose it happened to be writing, tool calls, phase markers,
+    /// captions -- is the transcript, and lives behind FULL TRANSCRIPT.
+    var isConversation: Bool { kind == .you || kind == .sent }
 
     /// Seconds, and only when the server measured them.
     var duration: TimeInterval? { durationMs.map { $0 / 1000 } }

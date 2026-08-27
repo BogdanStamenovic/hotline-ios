@@ -166,7 +166,11 @@ nonisolated func route(from moments: [Moment], declared: [Phase] = []) -> Route 
         case .tool, .compact:
             legs[id]?.tools.append(moment)
             if moment.kind == .compact { out.compactions.append(moment) }
-        case .you, .claude, .summary, .state, .error:
+        case .you, .claude, .sent, .summary, .state, .error:
+            // `sent` is on the route for the same reason `claude` is not: the
+            // map is about the *work*, and a deliberate message is not a step
+            // in it. It carries no phase id from the server either, so it can
+            // never reach this switch with an `id` to file itself under.
             break
         }
     }

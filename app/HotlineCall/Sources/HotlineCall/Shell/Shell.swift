@@ -45,6 +45,21 @@ struct Shell: View {
     // ---- step 7: the news, once it has travelled -------------------------
     @State private var signal: Signal?
 
+    /// **Messages-only is the default, and it is his answer, not a guess.**
+    ///
+    /// He was told before choosing that nothing sent before 27 Aug was ever
+    /// mirrored and that old channels would open nearly empty, and he picked it
+    /// anyway. So it is not softened, not quietly widened toward "prose too",
+    /// and no old row is backfilled to make it look fuller. If the emptiness
+    /// turns out to bother him in use, that is new information from him rather
+    /// than a reason to undo the answer he already gave.
+    ///
+    /// Deliberately NOT persisted. It is one tap, and a sticky view mode means
+    /// opening a channel can show him something other than what he last saw a
+    /// channel show -- which is how a full transcript starts reading as the
+    /// default again.
+    @State private var fullTranscript = false
+
     // ---- step 8: the map, on its own progress value ----------------------
     @State private var map: Double = 0
     @State private var mapOpen = false
@@ -109,6 +124,38 @@ struct Shell: View {
         case purge(AgentID, Int?)
     }
 
+    /// Extracted from `body` because adding the view toggle's two arguments
+    /// tipped that ZStack over the type-checker's budget -- "unable to
+    /// type-check this expression in reasonable time", which is a size limit
+    /// rather than a mistake in any one line.
+    @ViewBuilder private var channelLayer: some View {
+        if let open, let agent = fleet[open] {
+            let channel = fleet.channel(for: open)
+            ChannelLayer(agent: agent, channel: channel,
+                         nav: nav, mo: mo, cut: sceneEpoch,
+                         committing: committing,
+                         onBack: leave, onDrag: scrub,
+                         onControls: { present(.controls(open)) },
+                         onContinue: { continueAfterCompact(agent) },
+                         onMapDrag: slideMap,
+                         onRetire: { retire(agent, !agent.isRetired) },
+                         onPurge: { present(.purge(open, nil)) },
+                         full: fullTranscript,
+                         onToggleFull: { fullTranscript.toggle() },
+                         onAnswer: { answer(agent, channel, $0) })
+                .id(open)
+
+                .allowsHitTesting(sheetKind == nil && !locked && (map < 0.5 || mapDragging))
+                // Behind the map it is pushed back and softened rather than
+                // merely dimmed, because it *is* behind something now.
+                .brightness(-0.5 * map)
+                .blur(radius: (map * 5).rounded())
+                .offset(y: -map * 10)
+                .scaleEffect(1 - 0.03 * map)
+                .zIndex(Z.channel)
+        }
+    }
+
     /// While the card holds the lock nothing else may be touched.
     private var locked: Bool { atomic != nil }
 
@@ -131,28 +178,10 @@ struct Shell: View {
                 .staged(.scrim, nav, mo)
                 .zIndex(Z.scrim)
 
+            channelLayer
+
             if let open, let agent = fleet[open] {
                 let channel = fleet.channel(for: open)
-                ChannelLayer(agent: agent, channel: channel,
-                             nav: nav, mo: mo, cut: sceneEpoch,
-                             committing: committing,
-                             onBack: leave, onDrag: scrub,
-                             onControls: { present(.controls(open)) },
-                             onContinue: { continueAfterCompact(agent) },
-                             onMapDrag: slideMap,
-                             onRetire: { retire(agent, !agent.isRetired) },
-                             onPurge: { present(.purge(open, nil)) },
-                             onAnswer: { answer(agent, channel, $0) })
-                    .id(open)
-                    .allowsHitTesting(sheetKind == nil && !locked && (map < 0.5 || mapDragging))
-                    // Behind the map it is pushed back and softened rather than
-                    // merely dimmed, because it *is* behind something now.
-                    .brightness(-0.5 * map)
-                    .blur(radius: (map * 5).rounded())
-                    .offset(y: -map * 10)
-                    .scaleEffect(1 - 0.03 * map)
-                    .zIndex(Z.channel)
-
                 if mapOpen {
                     MapLayer(agent: agent, channel: channel, progress: map, mo: mo,
                              seamDragging: mapDragging,
