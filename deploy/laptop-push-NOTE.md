@@ -145,3 +145,21 @@ weeks. A build that cannot be undone from a train is not one worth pushing.
 `xtool auth status` on the laptop: logged in, token good to **27/08/2027**. So
 installing this build — or rolling back — costs no Apple ID password and no 2FA
 round. Any note saying otherwise predates his 16:23 login.
+
+---
+
+# Superseded — 27 Aug 17:1x
+
+`HotlineCall.ipa` is now sha256 `11736c7a…90fa47`, pushed and verified on the
+laptop, pigion and here. **The 16:50 build (`1f85707b…`) was never installed by
+anyone and is gone** — it carried a tap-on-the-grabber close that competed with
+the seam drag for the same pixels, and an outcome-row skip that would have
+erased the answer from 142 of his 154 phases.
+
+`HotlineCall-prev.ipa` is deliberately **still** `26669c8c…` — the build he
+actually ran at 16:24. A rollback target should be a build known to work on his
+phone, not the most recent thing that happened to exist.
+
+Both defects were found by reviewers reading the diff cold, neither by its
+author. That is the second time today the same shape has paid: a stale premise
+and a design gap, each invisible from the inside.
