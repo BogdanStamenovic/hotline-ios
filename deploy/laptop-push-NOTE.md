@@ -107,3 +107,41 @@ Undo, if he wants it gone:
 
     ssh pigion 'systemctl --user disable --now wake-archserver-for-profile.timer &&
                 rm ~/.config/systemd/user/wake-archserver-for-profile.*'
+
+---
+
+# New build pushed to the laptop — 27 Aug 16:50
+
+`HotlineCall.ipa` sha256 `1f85707b…c86379`, carrying the three fixes he
+reported from the phone (prose truncation, the unclosable map, the transcript
+rebuilding every row). Landed and checksum-verified in all three places:
+`/mnt/iosbuild/beam` here, `~/hotline-beam` on pigion, and **`~/hotline` on the
+laptop** — the last one matters most, because he is not reliably on the tailnet
+and that is the whole reason the kit is pushed rather than pulled.
+
+The truncation half is server-side and is **already live**; `hotline-ios` was
+restarted at 16:49 and real `claude` events are landing from ingest, one of them
+2811 characters with its paragraph breaks intact. He does not need to reinstall
+for that.
+
+## The previous build is kept beside it
+
+`HotlineCall-prev.ipa`, sha256 `26669c8c…c88ab` — byte for byte what he
+installed at 16:24. **Deliberately absent from `SHA256SUMS`**, because `get.sh`
+runs `sha256sum -c` over that file and only ever downloads the three it names;
+listing a fourth would make every fetch fail on a file it never asked for.
+
+Rollback is local and needs no network:
+
+    cd ~/hotline && cp HotlineCall-prev.ipa HotlineCall.ipa && ./sideload.sh
+
+This exists because **nobody has ever run this app.** It compiles here in
+seconds and the wire tests execute real app code on Linux, but no view has been
+rendered outside a macOS simulator, and he is about to depend on it for two
+weeks. A build that cannot be undone from a train is not one worth pushing.
+
+## Re-signing now costs him nothing extra
+
+`xtool auth status` on the laptop: logged in, token good to **27/08/2027**. So
+installing this build — or rolling back — costs no Apple ID password and no 2FA
+round. Any note saying otherwise predates his 16:23 login.
