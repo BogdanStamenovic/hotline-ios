@@ -438,6 +438,7 @@ final class DriveTests: XCTestCase {
         // wanted when you are asking "did the whole string get here".
         //
         // Printed, not attached. The .xcresult needs a Mac.
+        checkViews(app)
         checkProse(app)
 
         mark("=== drive ends ===")
@@ -602,6 +603,39 @@ final class DriveTests: XCTestCase {
     ///
     /// `.keepAlways` is load-bearing. An attachment defaults to
     /// `deleteOnSuccess`, so on a passing run -- the only kind worth comparing
+    /// The two views, checked by what each one does NOT show.
+    ///
+    /// The default is the conversation: messages an agent chose to send, and
+    /// his replies. FULL TRANSCRIPT is everything. Asserting only that the
+    /// default *contains* a sent message would pass even if it also showed the
+    /// whole firehose, which is the bug the default exists to fix -- so the
+    /// absence of a tool row is the load-bearing half.
+    private func checkViews(_ app: XCUIApplication) {
+        func labels() -> [String] { app.staticTexts.allElementsBoundByIndex.map(\.label) }
+        let sentMark = "Deploy is done."
+        let toolMark = "pytest"
+
+        let chip = app.buttons["view-chip"]
+        guard chip.waitForExistence(timeout: 4) else {
+            print("VIEW NOT-FOUND no view-chip; the header row did not render one")
+            return
+        }
+
+        let first = labels()
+        print("VIEW default sent=\(first.contains { $0.contains(sentMark) }) "
+              + "tools=\(first.contains { $0.contains(toolMark) }) chip=\(chip.label)")
+
+        chip.tap()
+        settle(1.5)
+        let second = labels()
+        print("VIEW full sent=\(second.contains { $0.contains(sentMark) }) "
+              + "tools=\(second.contains { $0.contains(toolMark) }) chip=\(chip.label)")
+
+        // Back, so the resting frame is the default he will actually open into.
+        chip.tap()
+        settle(1.0)
+    }
+
     /// The stub injects two `claude` events whose text says what it is proving.
     /// This reports on the one that matters: full length, paragraph breaks
     /// intact, no ellipsis. See `ci/stub/daemon.py`.

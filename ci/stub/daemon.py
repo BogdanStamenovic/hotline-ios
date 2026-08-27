@@ -142,7 +142,33 @@ def inject_prose(events):
     return events
 
 
+_SENT = [
+    "Deploy is done. Nothing needs you.",
+    "I stopped before the irreversible step. Say go and I will finish it.",
+]
+
+
+def inject_sent(events):
+    """Two messages an agent chose to send him.
+
+    These, and his own `you` rows, are the whole of the thread's default view --
+    so without them the drive would open a channel that is *correctly* empty and
+    prove nothing about the feature. `sent` is stored apart from `claude` on
+    purpose; see `Service.sent`.
+    """
+    seq = max(e["seq"] for e in events)
+    at = max(e["at"] for e in events if "at" in e)
+    for offset, text in enumerate(_SENT, start=1):
+        seq += 1
+        events.append({
+            "seq": seq, "kind": "sent", "text": text,
+            "at": at + offset, "agent": events[0].get("agent"),
+        })
+    return events
+
+
 inject_prose(HISTORY["events"])
+inject_sent(HISTORY["events"])
 
 # The roster's own time fields, so the rows show live relative stamps and the
 # ELAPSED clock actually ticks.

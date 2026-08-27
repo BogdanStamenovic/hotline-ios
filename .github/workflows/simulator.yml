@@ -420,7 +420,7 @@ jobs:
             echo
             grep -E "^MARK " out/test.log 2>/dev/null || echo "(no MARK lines)"
             echo
-            grep -E "^PROSE " out/test.log 2>/dev/null || echo "(no PROSE line -- the check did not run)"
+            grep -E "^PROSE |^VIEW " out/test.log 2>/dev/null || echo "(no PROSE/VIEW lines -- the checks did not run)"
             echo
             # A compile error is otherwise only in the step log and the
             # build.log artifact, and both need a GitHub token. Run
