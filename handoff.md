@@ -11,6 +11,50 @@ not test this myself and no magic packet has actually woken this box yet, so
 treat WoL as unverified: hope for `wakeonlan a8:a1:59:fd:4d:13`, plan for a walk
 to the power button.
 
+## CORRECTIONS, 27 August 2026 ~10:30 CEST — read these before anything below
+
+Three things this file states as fact are wrong. I found them by checking, not
+by reasoning, and the rest of the file is only as good as the parts I re-tested.
+
+1. **"I cannot compile Swift on this box" (§3) is FALSE.** The full toolchain is
+   here and works: Swift 6.2.3 plus the 3.1 GB Darwin SDK, on the ext4 loop image
+   at `/mnt/iosbuild`. A clean `.ipa` builds in **3.4 seconds**:
+
+       source /mnt/iosbuild/env62.sh
+       cd app/HotlineCall && /mnt/iosbuild/toolchain/xtool.AppImage dev build --ipa
+
+   `docs/BUILDING.md` has documented this the whole time, including the exact
+   trap that produced the false claim: `swift` is not on `PATH` until `env62.sh`
+   is sourced, so "swift: command not found" reads as "no toolchain" when the
+   truth is "not sourced". **You are not writing blind, and you do not need a
+   13-minute CI round to know whether Swift compiles.**
+
+2. **"Installing xtool on archserver ... is a system-wide install, so it needs
+   his yes" (§4.1) is FALSE, twice.** xtool ships a self-contained AppImage, so
+   no system-wide install exists to approve — and it is *already on this box*,
+   at `/mnt/iosbuild/toolchain/xtool.AppImage`. The most urgent item in this
+   file was never blocked on him at all.
+
+3. **The 403 device-limit failure is resolved, not pending.** His phone is
+   registered and `ENABLED` under team `3GAQP72Y5Z` (`25RYBYG6YU`), verified
+   against Apple today. `docs/DEVICE-LIMIT.md` has the detail. Do not act on
+   the "second Apple ID" option; it is not needed.
+
+**And the plan changed, from him.** Asked to plug the phone into the workstation
+before the profile expires, he answered:
+
+> "I am comming back on the 9th but i got the arch laptop with me. You can beam
+> it there"
+
+So **he is away until 9 September and the profile expires 1 September 22:53** —
+he is gone for the entire gap. The workstation cable is off the table. The
+sideload has to run from the laptop that is physically with him
+(`arch`, `100.103.46.118`, reachable passwordless over Tailscale), using
+`tools/sideload.sh`. What still genuinely needs his hands, and cannot be routed
+around: the cable, the Trust tap, and one `xtool auth login` on that laptop.
+
+---
+
 Repo: `/home/bodas/data/hotline-ios`, branch `main`, everything **pushed**.
 HEAD when written: `5a958cc`.
 

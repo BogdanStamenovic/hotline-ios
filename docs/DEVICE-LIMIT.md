@@ -91,3 +91,40 @@ tell that a device is already registered, so it always tries to create one.
 from issuance, which is the weekly re-sign he already accepted knowingly. It is
 not extra bad news — it is the same cost, and it is why `sideload.sh` is
 re-runnable.
+
+---
+
+## 2026-08-27 — resolved, and it was reading (2)
+
+Checked against Apple directly, with his live token on archserver:
+
+    $ xtool ds devices list
+    - id: 25RYBYG6YU
+      name: Bogdan
+      platform: IOS
+      udid: 00008130-001669590ABA001C
+      device class: IPHONE
+      status: ENABLED
+      model: iPhone 15 Pro
+      added date: 25/08/2026, 10:53 PM
+
+    $ xtool ds certificates list
+    - id: K3AQZFDBUU
+      name: Apple Development: Bogdan Stamenović
+      expiry: 25/08/2027, 10:43 PM
+
+**The device is registered and ENABLED**, and the registration timestamp
+(25 Aug 22:53) is the same minute the 403 was raised. So reading (2) above was
+correct: the slot was never full. `devices list` was empty *at that moment*
+because the registration had only just been created, and xtool, seeing nothing,
+tried to create it a second time and was refused for duplicating it.
+
+Two consequences:
+
+- **The second Apple ID is not needed.** Option 1 in the ranking above should
+  not be acted on. Nothing about the account has to change.
+- **A re-sign will not hit this.** The device already exists, so the weekly
+  `sideload.sh` re-run has no device to register.
+
+Note the arithmetic while you are here: registered 25 Aug 22:53, profile expires
+1 Sep 22:53. That is the 7-day clock, and it is measured from registration.

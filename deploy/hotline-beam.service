@@ -1,0 +1,25 @@
+# Serves the sideload kit (ipa + signer + script) on the tailnet, so the
+# laptop can PULL it whenever it happens to be online.
+#
+# Pull, not push: the laptop travels with him and drops off the tailnet
+# without warning -- a scp from here dies mid-transfer, a curl from there
+# runs when his side is actually up. That is the whole reason this exists.
+#
+# Bound to the tailscale address only, so it is not on the LAN. tailscale0
+# may not be up when this starts, hence Restart=always.
+#
+# beamd.py rather than `python -m http.server` because that one answers a Range
+# request with the whole file, so `curl -C -` restarts from zero. Verified:
+# a truncated 5 MB .ipa resumes to a byte-identical md5 through beamd.
+
+[Unit]
+Description=hotline sideload kit over the tailnet
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/bodas/data/hotline-ios/tools/beamd.py /mnt/iosbuild/beam 100.72.2.62 8790
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
