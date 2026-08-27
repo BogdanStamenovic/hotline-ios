@@ -50,3 +50,60 @@ That ordering is what makes the rehearsal safe to repeat.
 
 No URL to fetch, no tailnet dependency, nothing to re-download. Steps 1–3 work
 with the laptop entirely offline except for Apple's signing call.
+
+---
+
+# He ran it — 27 Aug 16:24
+
+Reported over the phone channel (no receipt, so evidence not proof) and then
+**corroborated on a machine he would have had to touch himself**: the laptop's
+`xtool auth status` flipped from `Logged out` to
+
+    Logged in.  bogdan.stamenovic@gmail.com  team 3GAQP72Y5Z
+    Token expiry: 27/08/2027, 4:23 PM
+
+That token can only exist if a human typed his Apple ID password and a 2FA code
+on that laptop, eight minutes after the push landed. Apple agrees — a new
+profile exists:
+
+    created    27/08/2026, 4:24 PM
+    expires    03/09/2026, 4:24 PM
+    device     00008130-001669590ABA001C   (his iPhone 15 Pro)
+
+## The deadline moved and got cheaper
+
+**2 September 04:16 is dead. The real date is 3 September 16:24.** The seven
+days run from *install*, which is exactly why the handoff says to ask the
+authority instead of deriving it — and it is why the answer changed the moment
+he installed.
+
+He is still away until 9 September, so the app still dies mid-trip. But the
+re-sign is no longer a download-and-log-in job:
+
+    cd ~/hotline && ./sideload.sh        # phone on the cable, unlocked
+
+No fetch, no tailnet, and **no 2FA** — the laptop's token is good until
+August 2027. Roughly a minute, offline apart from Apple's signing call.
+
+## The reminder no longer dies with this box
+
+`hotline-profile-watch.timer` queries Apple live, so it tracks 3 September on
+its own with no edit. Its real weakness was never the date: **it runs here, and
+here gets powered off.**
+
+Closed from pigion, which has been up 39 days. `wake-archserver-for-profile
+.timer` there fires `~/bin/wake-archserver` at 09:40 on 30, 31 Aug and 1, 2,
+3 Sept — five explicit dates, so it expires by itself and leaves no cruft.
+archserver's watcher is `Persistent=true`, so a late wake still gets the missed
+check; the packet only has to land some time that day. Exercised for real, not
+just enabled: `sent 102-byte magic packet ... 192.168.1.255:9`.
+
+**This is best-effort, and the reason is unchanged from the last handoff: the
+BIOS half of WoL is still unproven.** ErP has never been tested through a real
+power-off. Do not read this as "the reminder is guaranteed" — read it as the
+reminder now has a path that does not require archserver to already be on.
+
+Undo, if he wants it gone:
+
+    ssh pigion 'systemctl --user disable --now wake-archserver-for-profile.timer &&
+                rm ~/.config/systemd/user/wake-archserver-for-profile.*'

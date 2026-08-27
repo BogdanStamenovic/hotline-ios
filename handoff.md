@@ -1,5 +1,15 @@
 # Handoff — hotline-ios, 27 August 2026 ~11:00 CEST
 
+> **UPDATE 27 Aug 16:30 — he installed it. §1 below is superseded.**
+>
+> The kit was pushed to his laptop over scp at his own instruction, he ran it,
+> and Apple issued a **new profile at 27/08 16:24 expiring 3 September 16:24**.
+> The 2 September 04:16 date in §1 is dead. He is still away until 9 September,
+> so the gap is real but one day later and far cheaper to close: the kit is on
+> his laptop and `xtool auth` there is **logged in with a token valid to Aug
+> 2027**, so re-signing is `cd ~/hotline && ./sideload.sh` with the cable — no
+> download, no tailnet, no 2FA. See `deploy/laptop-push-NOTE.md`.
+
 Written under a shutdown order, as the last one was. The previous session's
 handoff is preserved at `docs/HANDOFF-2026-08-27-0220.md` — **its §6 "Traps" is
 still the best thing in this repo and worth reading in full.** Everything else
