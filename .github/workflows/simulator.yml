@@ -431,6 +431,14 @@ jobs:
             # it could not read why.
             echo "-- build errors, if any --"
             grep -E "error:" build.log 2>/dev/null | head -20 || echo "(none)"
+            echo
+            # Run 33111035204 died mid-drive and the reason was only in the
+            # step log and the test.log artifact, both behind a token this
+            # machine does not have -- the same blindness the build errors
+            # above were added to fix, one layer along.
+            echo "-- test failures, if any --"
+            grep -E "error:|Fatal error|failed \\(|unexpected exit|test timeout|Restarting after" \
+                out/test.log 2>/dev/null | head -20 || echo "(none)"
           } > publish/RUN.txt
 
           cd publish

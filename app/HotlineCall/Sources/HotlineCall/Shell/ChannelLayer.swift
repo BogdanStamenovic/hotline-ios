@@ -216,27 +216,38 @@ struct ChannelLayer: View {
                     // because it destroys nothing. Delete is `sig` and opens the
                     // count sheet, which is where the hold and the real numbers
                     // are.
-                    Chip(text: agent.isRetired ? "UNRETIRE" : "RETIRE", tint: Theme.ink3)
+                    Button { onRetire(); more = false } label: {
+                        Chip(text: agent.isRetired ? "UNRETIRE" : "RETIRE", tint: Theme.ink3)
+                    }
+                        .buttonStyle(.plain)
                         .staged(.phaseChip, nav, mo)
-                        .contentShape(Rectangle())
-                        .onTapGesture { onRetire(); more = false }
-                        .accessibilityAddTraits(.isButton)
+                        .accessibilityIdentifier("retire-chip")
                         .accessibilityLabel(agent.isRetired
                                             ? "Retired. Tap to put it back in the fleet."
                                             : "Retire. It keeps running; you stop seeing it in the fleet.")
 
-                    Chip(text: "DELETE HISTORY", tint: Theme.sig, stroke: Theme.sig20)
+                    Button { onPurge(); more = false } label: {
+                        Chip(text: "DELETE HISTORY", tint: Theme.sig, stroke: Theme.sig20)
+                    }
+                        .buttonStyle(.plain)
                         .staged(.phaseChip, nav, mo)
-                        .contentShape(Rectangle())
-                        .onTapGesture { onPurge(); more = false }
-                        .accessibilityAddTraits(.isButton)
+                        .accessibilityIdentifier("delete-chip")
                         .accessibilityLabel("Delete history. Shows the counts first; it cannot be undone.")
                 } else {
-                    Chip(text: full ? "MESSAGES" : "FULL TRANSCRIPT", tint: Theme.ink3)
+                    // **A `Button`, not `.onTapGesture`.** The chip carried
+                    // the same tap modifier RETIRE and DELETE HISTORY were
+                    // using, and it did not fire: on a running simulator the
+                    // element resolved at a valid on-screen frame
+                    // (107,215,114x21 inside a 420x912 window) with
+                    // `isHittable == false`, and neither a plain tap nor a
+                    // coordinate tap changed anything. A `Button` owns its own
+                    // touch handling instead of relying on a gesture reaching
+                    // it through everything stacked above this row.
+                    Button(action: onToggleFull) {
+                        Chip(text: full ? "MESSAGES" : "FULL TRANSCRIPT", tint: Theme.ink3)
+                    }
+                        .buttonStyle(.plain)
                         .staged(.phaseChip, nav, mo)
-                        .contentShape(Rectangle())
-                        .onTapGesture(perform: onToggleFull)
-                        .accessibilityAddTraits(.isButton)
                         .accessibilityIdentifier("view-chip")
                         .accessibilityLabel(full
                                             ? "Showing the full transcript. Tap for messages only."
@@ -245,11 +256,11 @@ struct ChannelLayer: View {
 
                 Spacer(minLength: 0)
 
-                Chip(text: more ? "DONE" : "\u{22EF}", tint: Theme.ink4)
+                Button { withAnimation(.settle) { more.toggle() } } label: {
+                    Chip(text: more ? "DONE" : "\u{22EF}", tint: Theme.ink4)
+                }
+                    .buttonStyle(.plain)
                     .staged(.phaseChip, nav, mo)
-                    .contentShape(Rectangle())
-                    .onTapGesture { withAnimation(.settle) { more.toggle() } }
-                    .accessibilityAddTraits(.isButton)
                     .accessibilityIdentifier("more-chip")
                     .accessibilityLabel(more ? "Done" : "More: retire, delete history")
             }

@@ -657,30 +657,17 @@ final class DriveTests: XCTestCase {
               + "hittable=\(chip.isHittable) enabled=\(chip.isEnabled)")
         print("VIEW window \(app.windows.firstMatch.frame)")
 
-        // **What is actually at that point.** `isHittable` says a hit test at
-        // the centre does not resolve to this element; it does not say what it
-        // resolves to instead, and that is the only fact that matters. Both a
-        // plain tap and a coordinate tap changed nothing, so something is over
-        // it -- print everything whose frame contains the chip's centre, top
-        // of the tree last.
-        let point = CGPoint(x: frame.midX, y: frame.midY)
-        let covering = app.descendants(matching: .any).allElementsBoundByIndex
-            .filter { $0.exists && $0.frame.contains(point) }
-        print("VIEW covering-count \(covering.count)")
-        for element in covering.suffix(12) {
-            let f = element.frame
-            print("VIEW covering type=\(element.elementType.rawValue) "
-                  + "id=\(element.identifier) "
-                  + "frame=\(Int(f.minX)),\(Int(f.minY)),\(Int(f.width)),\(Int(f.height)) "
-                  + "label=\(element.label.prefix(40))")
-        }
-
-        // The same pattern, twice more, so the answer is not specific to one
-        // chip. `more-chip` is the same `onTapGesture` on the same row; the
-        // map's CLOSE is a real `Button`, and it has never been verified either
-        // -- the map was only ever confirmed to close by dragging the grabber.
+        // The three controls in one line. The full-tree enumeration that used
+        // to be here walked `descendants(matching: .any)`, which is an IPC
+        // round trip per element and slow enough to be a hazard in its own
+        // right -- and it stops being worth the risk now that the chips are
+        // `Button`s. If a Button answers where the gesture did not, the cause
+        // was the gesture, and what was sitting on top of it is academic.
         let more = app.buttons["more-chip"]
-        print("VIEW more-chip exists=\(more.exists) hittable=\(more.exists && more.isHittable)")
+        let del = app.buttons["delete-chip"]
+        print("VIEW controls view=\(chip.isHittable) "
+              + "more=\(more.exists && more.isHittable) "
+              + "delete-exists=\(del.exists)")
 
         let before = seen()
         print("VIEW default sent=\(before.sent) tool=\(before.tool) prose=\(before.prose)")
