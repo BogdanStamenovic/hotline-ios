@@ -439,7 +439,6 @@ final class DriveTests: XCTestCase {
         //
         // Printed, not attached. The .xcresult needs a Mac.
         checkViews(app)
-        checkProse(app)
 
         mark("=== drive ends ===")
         attachTree(app, name: "final-tree")
@@ -603,35 +602,61 @@ final class DriveTests: XCTestCase {
     ///
     /// `.keepAlways` is load-bearing. An attachment defaults to
     /// `deleteOnSuccess`, so on a passing run -- the only kind worth comparing
-    /// The two views, checked by what each one does NOT show.
+    /// The two views, checked by what each one HIDES.
     ///
-    /// The default is the conversation: messages an agent chose to send, and
-    /// his replies. FULL TRANSCRIPT is everything. Asserting only that the
-    /// default *contains* a sent message would pass even if it also showed the
-    /// whole firehose, which is the bug the default exists to fix -- so the
-    /// absence of a tool row is the load-bearing half.
+    /// Asserting only that the default contains a sent message would pass even
+    /// if it also showed the whole firehose, which is the thing the default
+    /// exists to remove -- so the absences are the load-bearing half.
+    ///
+    /// Every marker is a sentinel the stub puts in one place. The first version
+    /// of this looked for "pytest" in `app.staticTexts`, which is the entire
+    /// accessibility tree: the fleet list is still mounted behind the channel
+    /// with every agent's task in it, so a roster row matched and the default
+    /// view was reported as leaking tool calls when it was not. §6 says
+    /// `element.exists` is not on screen; the same applies to a string.
     private func checkViews(_ app: XCUIApplication) {
-        func labels() -> [String] { app.staticTexts.allElementsBoundByIndex.map { $0.label } }
         let sentMark = "Deploy is done."
-        let toolMark = "pytest"
+        let toolMark = "ZZTOOLROW"
+        let proseMark = "This paragraph exists so a screenshot can prove"
+
+        func seen() -> (sent: Bool, tool: Bool, prose: Bool) {
+            let all = app.staticTexts.allElementsBoundByIndex.map { $0.label }
+            return (all.contains { $0.contains(sentMark) },
+                    all.contains { $0.contains(toolMark) },
+                    all.contains { $0.contains(proseMark) })
+        }
 
         let chip = app.buttons["view-chip"]
         guard chip.waitForExistence(timeout: 4) else {
             print("VIEW NOT-FOUND no view-chip; the header row did not render one")
+            logTree(app, name: "no-view-chip")
             return
         }
 
-        let first = labels()
-        print("VIEW default sent=\(first.contains { $0.contains(sentMark) }) "
-              + "tools=\(first.contains { $0.contains(toolMark) }) chip=\(chip.label)")
+        let before = seen()
+        print("VIEW default sent=\(before.sent) tool=\(before.tool) prose=\(before.prose)")
+        print("VIEW default-chip \(chip.label)")
 
         chip.tap()
-        settle(1.5)
-        let second = labels()
-        print("VIEW full sent=\(second.contains { $0.contains(sentMark) }) "
-              + "tools=\(second.contains { $0.contains(toolMark) }) chip=\(chip.label)")
+        settle(2.0)
+        let after = seen()
+        print("VIEW full sent=\(after.sent) tool=\(after.tool) prose=\(after.prose)")
+        print("VIEW full-chip \(chip.label)")
 
-        // Back, so the resting frame is the default he will actually open into.
+        // The tap is the one thing here that can fail silently, so say plainly
+        // whether the view actually changed rather than leaving it to be
+        // inferred from two lines that happen to differ.
+        print("VIEW toggled=\(before != after)")
+        if before == after {
+            logTree(app, name: "view-chip-did-nothing")
+        }
+
+        if after.prose {
+            checkProse(app)
+        } else {
+            print("PROSE SKIPPED the full view never appeared, so there was nothing to measure")
+        }
+
         chip.tap()
         settle(1.0)
     }

@@ -167,8 +167,27 @@ def inject_sent(events):
     return events
 
 
+def mark_one_tool(events):
+    """Put a sentinel in exactly one tool row.
+
+    The drive has to tell "a tool row is on this screen" from "the word appears
+    somewhere in the app", and `app.staticTexts` is the WHOLE tree -- the fleet
+    list sits behind the channel with every agent's task text in it. Checking
+    for a plausible substring found a match in a roster row and reported the
+    default view as leaking tool calls when it was not. A sentinel that exists
+    nowhere else is the difference between measuring the screen and measuring
+    the process.
+    """
+    for e in events:
+        if e.get("kind") == "tool":
+            e["text"] = "ZZTOOLROW " + str(e.get("text", ""))
+            return events
+    return events
+
+
 inject_prose(HISTORY["events"])
 inject_sent(HISTORY["events"])
+mark_one_tool(HISTORY["events"])
 
 # The roster's own time fields, so the rows show live relative stamps and the
 # ELAPSED clock actually ticks.
