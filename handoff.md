@@ -1,8 +1,15 @@
 # Handoff — hotline-ios session, 27 August 2026 ~02:20 CEST
 
-Written under a shutdown order. **This box has no remote wake** (`enp4s0`
-NO-CARRIER, `Wake-on: d`), so nobody can reach it to fix an omission here — a
-physical power-button press is the only way back. Assume this file is all you get.
+Written under a shutdown order. Assume this file is all you get.
+
+**Remote wake — CHANGED after this file was first written, and still unproven.**
+The original line here said a physical power-button press was the only way back.
+`hotline-80` then reported it armed and tested the OS side: `wol-enp4s0.service`,
+enabled, and it re-armed to `g` after being forced to `d`. **The cable and the
+BIOS are his, and ErP must be DISABLED or the NIC gets no standby power.** I did
+not test this myself and no magic packet has actually woken this box yet, so
+treat WoL as unverified: hope for `wakeonlan a8:a1:59:fd:4d:13`, plan for a walk
+to the power button.
 
 Repo: `/home/bodas/data/hotline-ios`, branch `main`, everything **pushed**.
 HEAD when written: `5a958cc`.
@@ -264,8 +271,11 @@ do not need to re-fetch the artifact), `channel.png` (the after, from CI).
   `ssh-keygen -R` left its own `.old` backup.
 - **`profiler` is NOT on arch.** Natural follow-on if he wants the laptop's bash
   and zsh kept in step the way archserver's are. He has not asked.
-- Peer sessions at write time: `arch-repair` (terminal work, finished and
-  acknowledged), `hotline-f8`.
+- Peer sessions at write time: `arch-repair`, `hotline-f8`. **`arch-repair` has
+  since been retired** on Bogdan's instruction ("Arch repair should die. the
+  laptop is dead"). Its own handoff is preserved at
+  `/home/bodas/data/arch-repair-handoff.md` — note it covers two different
+  machines: the dead HP, and the new `arch` laptop it went on to set up.
 
 ---
 
