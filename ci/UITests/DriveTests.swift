@@ -633,6 +633,16 @@ final class DriveTests: XCTestCase {
             return
         }
 
+        // §6: an element is in the tree whether or not it is on the screen, and
+        // `tap()` taps its frame's centre wherever that lands. `visibleRow`
+        // exists because a row once got tapped at y = -32. Report the geometry
+        // rather than inferring it from a tap that did nothing.
+        let frame = chip.frame
+        print("VIEW chip-frame x=\(Int(frame.minX)) y=\(Int(frame.minY)) "
+              + "w=\(Int(frame.width)) h=\(Int(frame.height)) "
+              + "hittable=\(chip.isHittable) enabled=\(chip.isEnabled)")
+        print("VIEW window \(app.windows.firstMatch.frame)")
+
         let before = seen()
         print("VIEW default sent=\(before.sent) tool=\(before.tool) prose=\(before.prose)")
         print("VIEW default-chip \(chip.label)")
@@ -648,7 +658,17 @@ final class DriveTests: XCTestCase {
         // inferred from two lines that happen to differ.
         print("VIEW toggled=\(before != after)")
         if before == after {
-            logTree(app, name: "view-chip-did-nothing")
+            // A coordinate tap goes through the same path a finger does and
+            // does not care what the element thinks its bounds are. If THIS
+            // works and `tap()` did not, the fault is the frame; if neither
+            // does, the gesture is not being reached at all.
+            chip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            settle(2.0)
+            let retried = seen()
+            print("VIEW retry-coordinate sent=\(retried.sent) tool=\(retried.tool) "
+                  + "prose=\(retried.prose) toggled=\(retried != before)")
+            print("VIEW retry-chip \(chip.label)")
+            if retried == before { logTree(app, name: "view-chip-did-nothing") }
         }
 
         if after.prose {

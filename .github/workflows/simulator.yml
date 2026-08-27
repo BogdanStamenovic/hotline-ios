@@ -422,6 +422,9 @@ jobs:
             echo
             grep -E "^PROSE |^VIEW " out/test.log 2>/dev/null || echo "(no PROSE/VIEW lines -- the checks did not run)"
             echo
+            echo "-- the chip in the tree --"
+            grep -E "view-chip|route-chip|more-chip" out/test.log 2>/dev/null | head -10 || echo "(not in any dumped tree)"
+            echo
             # A compile error is otherwise only in the step log and the
             # build.log artifact, and both need a GitHub token. Run
             # 33094103028 failed to build and the one machine that could fix
