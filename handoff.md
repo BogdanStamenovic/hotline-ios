@@ -20,10 +20,20 @@ for a week.
 Everything needed for that is built, served and rehearsed. His whole job is one
 command on the laptop, phone plugged in and unlocked:
 
-    curl -fsSL http://100.72.2.62:8790/get.sh | bash
+    curl -fsSL http://100.114.148.69:8790/get.sh | bash
 
-He has been told, twice, and it is in the served `README.txt`.
-`hotline-profile-watch.timer` will page him daily from 30 August.
+**That address is pigion, not archserver, and the distinction is the point.**
+archserver builds the `.ipa` and serves it too — and archserver gets powered
+off, which would take the install route down with it. pigion has been up five
+weeks with linger on, so it holds the durable copy; `get.sh` probes both, so a
+sleeping archserver costs nothing. `deploy/pigion-beam-NOTE.md` has the
+publish-a-new-build steps; **the mirror is deliberately not automatic.**
+
+He has been told three times, including a correction after I twice gave him the
+archserver URL. `hotline-profile-watch.timer` pages him daily from 30 August —
+but note that timer runs *here*, so if this box stays off, that warning does not
+fire. pigion serving the kit is what makes the plan survive the shutdown; the
+reminder does not.
 
 **Do not re-derive that date.** The 1 September 22:53 written all over this repo
 was wrong — it was seven days from when the *device* was registered, but the
@@ -75,6 +85,19 @@ Checked, not reasoned about:
   exercised.
 - **The wire tests now run against the live daemon**, and that turned up the
   bug in §4.
+- **The kit mirrored to pigion**, and `~/bin/wake-archserver` on pigion — a
+  dependency-free magic packet, since pigion is the only always-on box on this
+  LAN (192.168.1.8 to .139).
+
+### WoL, verified further than it was, and still not all the way
+
+The older notes call this armed-but-unproven. It is now: NIC reports
+`Wake-on: g`, `wol-enp4s0.service` re-arms at boot, and a correctly formed
+102-byte packet from pigion was confirmed **received** on this box's udp/9
+(root python listener; tcpdump is not installed and one packet did not justify
+a package). **The BIOS half remains unproven** — ErP must be disabled or the
+NIC gets no standby power, and only a real power-off settles that. Plan for it
+working, do not bet the kit on it: that is why the kit is on pigion.
 
 ## 4. The bug worth remembering
 
@@ -125,10 +148,19 @@ never an invariant — it now asserts that whatever arrives decodes.
 
 ## 7. Machine state
 
-`hotline-ios`, `hotline-beam`, `hotline-profile-watch.timer`, `hotlined` — all
-active and enabled, linger on. `/mnt/iosbuild` mounted. The served `.ipa` is
-byte-identical to a clean build of `main` and its published SHA256 verifies over
-HTTP.
+**archserver:** `hotline-ios`, `hotline-beam`, `hotline-profile-watch.timer`,
+`hotlined` — all active and enabled, linger on. `/mnt/iosbuild` mounted. The
+served `.ipa` is byte-identical to a clean build of `main` and its published
+SHA256 verifies over HTTP.
+
+**pigion** (`100.114.148.69`, up 5 weeks, linger on): `hotline-beam.service`
+enabled and active, serving `~/hotline-beam` on the tailnet address only. Same
+`.ipa`, same SHA256, range/resume confirmed, and the one command rehearsed
+end to end under a clean `HOME` — it stops exactly at the device wall, before
+asking for credentials. `~/bin/wake-archserver` is there too.
+
+To undo the pigion side entirely: `systemctl --user disable --now hotline-beam`
+and delete `~/hotline-beam` and `~/bin/wake-archserver`.
 
 **If `/mnt/iosbuild` is empty after a boot, the mount is down, not the toolchain
 gone.** `findmnt /mnt/iosbuild || sudo systemctl start mnt-iosbuild.mount`.
