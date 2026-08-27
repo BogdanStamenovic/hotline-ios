@@ -602,17 +602,17 @@ final class DriveTests: XCTestCase {
     ///
     /// `.keepAlways` is load-bearing. An attachment defaults to
     /// `deleteOnSuccess`, so on a passing run -- the only kind worth comparing
-    /// a design against -- every screenshot would be discarded before upload.
     /// The stub injects two `claude` events whose text says what it is proving.
     /// This reports on the one that matters: full length, paragraph breaks
     /// intact, no ellipsis. See `ci/stub/daemon.py`.
     private func checkProse(_ app: XCUIApplication) {
         let head = "This paragraph exists so a screenshot can prove"
         let tail = "the fix did not reach the device."
-        let found = app.staticTexts.allElementsBoundByIndex
-            .map(\.label)
-            .first { $0.contains(head) }
-        guard let text = found else {
+        // `first(where:)` spelled out. `Array.first` is also a property, and a
+        // trailing closure on the next line binds to that instead -- which is
+        // what failed the build on run 33094103028.
+        let labels = app.staticTexts.allElementsBoundByIndex.map(\.label)
+        guard let text = labels.first(where: { $0.contains(head) }) else {
             print("PROSE NOT-FOUND no static text contains the marker")
             return
         }

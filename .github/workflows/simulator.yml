@@ -421,6 +421,13 @@ jobs:
             grep -E "^MARK " out/test.log 2>/dev/null || echo "(no MARK lines)"
             echo
             grep -E "^PROSE " out/test.log 2>/dev/null || echo "(no PROSE line -- the check did not run)"
+            echo
+            # A compile error is otherwise only in the step log and the
+            # build.log artifact, and both need a GitHub token. Run
+            # 33094103028 failed to build and the one machine that could fix
+            # it could not read why.
+            echo "-- build errors, if any --"
+            grep -E "error:" build.log 2>/dev/null | head -20 || echo "(none)"
           } > publish/RUN.txt
 
           cd publish
