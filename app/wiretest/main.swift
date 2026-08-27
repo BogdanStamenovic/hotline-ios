@@ -597,12 +597,42 @@ do {
           "**every kind on it decodes to a real case** -- .summary is the unknown bucket, and nothing lands there")
     check(page.events.contains { $0.kind == .tool },
           "tool rows are there, so the tool dot has something exact to flash on")
-    check(page.events.allSatisfy { $0.durationMs == nil },
-          "and none of them carries duration_ms yet, so every tool row renders NO bar rather than a guess")
+    // This used to assert that NO event carried duration_ms. That was a
+    // snapshot of what the daemon happened to send, never an invariant, and
+    // the daemon started sending it -- so the check failed on 27 Aug against a
+    // live feed with nothing wrong with it. Absence is not the property worth
+    // holding; decoding whatever arrives is.
+    let timed = page.events.filter { $0.durationMs != nil }
+    check(!timed.isEmpty,
+          "**the live feed now carries duration_ms** -- it did not before 27 Aug 2026")
+    check(timed.allSatisfy { $0.kind == .tool },
+          "and only on tool rows, which is the only row where a duration means anything")
+    check(timed.allSatisfy { ($0.duration ?? -1) > 0 && ($0.duration ?? -1) < 86_400 },
+          "every live duration converts to a sane number of seconds")
     check(page.events.allSatisfy { !$0.viaSubagent },
           "no viaSubagent rows in this slice either, so nothing is dimmed on a guess")
 } catch {
     check(false, "today's feed decodes: \(error)")
+}
+
+// ---------------------------------------------------------------------------
+section("history, as the daemon sends it today")
+
+// The degradation checks above read `live-history.json`, which is frozen at an
+// older daemon's shape on purpose. Nothing was reading the CURRENT history
+// shape at all -- a hole that only showed up because run.sh was overwriting the
+// frozen fixture with today's bytes, and the old checks kept passing anyway.
+do {
+    let page = try decoder.decode(HistoryPage.self, from: load("today-history.json"))
+    check(!page.events.isEmpty, "today's history page carries \(page.events.count) events")
+    check(page.events.allSatisfy { $0.kind != .summary },
+          "every kind decodes to a real case -- nothing falls into the .summary bucket")
+
+    let built = route(from: page.events)
+    let toolRows = page.events.filter { $0.kind == .tool || $0.kind == .compact }
+    let placed = built.phases.flatMap(\.tools).count + built.unphased.count
+    check(placed == toolRows.count,
+          "**the route still places every one of the \(toolRows.count) tool rows exactly once** on today's shape")
 }
 
 // ---------------------------------------------------------------------------

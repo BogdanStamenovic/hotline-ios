@@ -25,6 +25,12 @@ out="${TMPDIR:-/tmp}/hotline-wiretest"
 # vitals, no controls -- and they are what proves the graceful-degradation
 # claims rather than asserting them. **They are deliberately not refreshed.**
 # The `today-*.json` set is the current contract, and those are.
+#
+# This rule was stated here from the start and the history curl below broke it
+# anyway, writing over `live-history.json` on every refresh. That is worse than
+# it looks: the degradation checks at main.swift:401 keep PASSING against
+# current-shape bytes, so the suite stays green while quietly no longer testing
+# degradation at all. If you add a fixture here, check which set it belongs to.
 if [[ $# -ge 1 ]]; then
     host="$1"
     agent="${2:-hotline-80}"
@@ -35,7 +41,7 @@ if [[ $# -ge 1 ]]; then
         "http://$host:8789/api/v1/agents" -o "$here/fixtures/today-agents.json"
     curl -sf -X POST -H 'Content-Type: application/json' \
         -d "{\"agent\":\"$agent\",\"limit\":200}" \
-        "http://$host:8789/api/v1/agents/history" -o "$here/fixtures/live-history.json"
+        "http://$host:8789/api/v1/agents/history" -o "$here/fixtures/today-history.json"
     curl -sf -X POST -H 'Content-Type: application/json' \
         -d "{\"agent\":\"$agent\",\"since\":0,\"wait\":0}" \
         "http://$host:8789/api/v1/agents/feed" -o "$here/fixtures/today-feed.json"

@@ -1,1 +1,1 @@
-{"agent": "hotline-80", "scope": "history", "dry_run": true, "conversations": 0, "events": 29, "phases": 3, "oldest_at": 1787677319.088, "agent_removed": false, "history_generation": 0}
+{"agent": "hotline-80", "scope": "history", "dry_run": true, "conversations": 2, "events": 516, "phases": 21, "oldest_at": 1787677319.088, "agent_removed": false, "history_generation": 0}
