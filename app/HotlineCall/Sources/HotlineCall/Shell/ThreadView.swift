@@ -80,8 +80,8 @@ struct ThreadView: View {
                     .foregroundStyle(Theme.ink4)
                     .frame(maxWidth: .infinity)
             }
-            ForEach(Array(staged.enumerated()), id: \.element.key) { _, row in
-                row.view
+            ForEach(staged) { row in
+                content(for: row)
                     .staged(.message(k: row.k), nav, mo)
                     .opacity(cut)
                     .offset(y: (1 - cut) * 20 * mo)
@@ -98,30 +98,59 @@ struct ThreadView: View {
     private var staged: [Row] {
         var out: [Row] = []
         for moment in channel.moments {
-            out.append(Row(key: "m\(moment.seq)", k: 0,
-                           view: AnyView(MomentRow(moment: moment))))
+            // **`outcome` is not drawn here.** It is the *map's* leg caption --
+            // `_one_line`d to 240 characters by the server on purpose -- and
+            // since the agent's prose now arrives as its own `claude` moment,
+            // rendering it in the thread as well repeated the last paragraph
+            // directly under itself, truncated. The map still draws it, because
+            // `Route` is built from `channel.moments` in the store rather than
+            // from these rows.
+            if moment.kind == .outcome { continue }
+            out.append(Row(key: "m\(moment.seq)", k: 0, kind: .moment(moment)))
         }
         for note in channel.notes {
-            out.append(Row(key: "n\(note.seq)", k: 0,
-                           view: AnyView(MomentRow(moment: note))))
+            out.append(Row(key: "n\(note.seq)", k: 0, kind: .moment(note)))
         }
         if channel.continueOffer {
-            out.append(Row(key: "continue", k: 0,
-                           view: AnyView(ContinueRow(act: onContinue))))
+            out.append(Row(key: "continue", k: 0, kind: .continueOffer))
         }
         for entry in channel.pending {
-            out.append(Row(key: "p\(entry.id)", k: 0,
-                           view: AnyView(PendingRow(entry: entry) { onRetry(entry.id) })))
+            out.append(Row(key: "p\(entry.id)", k: 0, kind: .pending(entry)))
         }
         let last = out.count - 1
-        return out.enumerated().map { Row(key: $0.element.key, k: last - $0.offset,
-                                          view: $0.element.view) }
+        for i in out.indices { out[i].k = last - i }
+        return out
     }
 
-    private struct Row {
+    /// **Deliberately not `AnyView`.** Every row used to be built as one, which
+    /// erases its type -- and with the type goes the structural identity
+    /// SwiftUI diffs on, so a single arriving event rebuilt and re-laid-out all
+    /// ~200 mounted rows instead of the one that changed. The feed appends
+    /// while an agent works, so that ran continuously and got worse the longer
+    /// a channel stayed open, which is exactly how it felt.
+    ///
+    /// A `switch` in a `@ViewBuilder` is a `_ConditionalContent`, whose identity
+    /// is per branch -- stable here, because a row never changes kind.
+    @ViewBuilder
+    private func content(for row: Row) -> some View {
+        switch row.kind {
+        case .moment(let moment): MomentRow(moment: moment)
+        case .continueOffer:      ContinueRow(act: onContinue)
+        case .pending(let entry): PendingRow(entry: entry) { onRetry(entry.id) }
+        }
+    }
+
+    private struct Row: Identifiable {
         let key: String
-        let k: Int
-        let view: AnyView
+        var k: Int
+        let kind: Kind
+        var id: String { key }
+
+        enum Kind {
+            case moment(Moment)
+            case continueOffer
+            case pending(Channel.Pending)
+        }
     }
 
     private var headerText: String {
@@ -230,6 +259,7 @@ private struct MomentRow: View {
             Text(moment.text)
                 .text(.body)
                 .foregroundStyle(Theme.ink)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(RoundedRectangle(cornerRadius: Theme.bubbleRadius).fill(Theme.surf2))
@@ -241,6 +271,15 @@ private struct MomentRow: View {
         Text(moment.text)
             .text(.body)
             .foregroundStyle(Theme.ink)
+            // **Required, not decorative.** The thread measures its own content
+            // height through `onGeometryChange` and scrolls it by hand, so a
+            // row that accepts a proposed height smaller than its text needs is
+            // silently clipped rather than pushing the column taller. `marker`
+            // already carries this for the same reason. It matters more here
+            // than anywhere: until the server started sending `claude` moments
+            // this row rendered one short sentence, and it now renders whole
+            // multi-paragraph answers.
+            .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 

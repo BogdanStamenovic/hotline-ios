@@ -201,9 +201,15 @@ async def test_a_turn_becomes_a_phase_with_its_tools_under_it(claude_home, doubl
     assert phases[0]["ended_at"] is not None
 
     events = service.store.since(name, 0)
+    # The prose sits where it was written -- after the tools it followed, before
+    # the phase closes. The `outcome` after it is the map's short leg caption,
+    # not a second copy of the message.
     assert [(e.kind, e.tool) for e in events] == [
-        ("phase", None), ("tool", "Bash"), ("tool", "Edit"), ("outcome", None)
+        ("phase", None), ("tool", "Bash"), ("tool", "Edit"),
+        ("claude", None), ("outcome", None)
     ]
+    assert events[3].text == "Fixed it -- the mock clock was a second behind."
+
     # §2's storage policy: the tool name plus a one-line summary of the primary
     # argument. The full record stays on disk in the transcript.
     assert events[1].text == "pytest -q tests/test_payments.py"
@@ -480,11 +486,11 @@ async def test_the_hook_endpoint_files_a_phase_end_to_end(claude_home, doubles):
             "transcript_path": str(claude_home / "projects" / "-fake" / f"{SID}.jsonl"),
             "event": "Stop",
         })
-        assert answer == {"ok": True, "agent": name, "event": "Stop", "events": 3,
+        assert answer == {"ok": True, "agent": name, "event": "Stop", "events": 4,
                           "tools": 1, "phases_opened": 1, "phases_closed": 1}
         feed = await asyncio.to_thread(
             post, port, "/api/v1/agents/feed", {"agent": name, "since": 0, "wait": 0})
-        assert [e["kind"] for e in feed["events"]] == ["phase", "tool", "outcome"]
+        assert [e["kind"] for e in feed["events"]] == ["phase", "tool", "claude", "outcome"]
         assert feed["events"][0]["text"] == "ship the release"
         assert feed["events"][0]["phase"] == feed["events"][1]["phase"]
     finally:
@@ -773,3 +779,53 @@ async def test_a_position_past_the_end_of_the_transcript_restarts_the_read(
 
     assert result is not None and result.events > 0, "the channel came back to life"
     assert any("past the end" in note for note in service.degradations)
+
+
+async def test_the_prose_reaches_the_phone_whole_and_not_as_a_caption(claude_home, doubles):
+    """The bug he reported from the phone: "the text again gets truncated ...
+    not okay for actual text you output."
+
+    Assistant prose used to be stored *only* as the phase's `outcome`, which is
+    `_one_line`d to OUTCOME_MAX for the map's leg caption. Two things were lost:
+    every answer arrived as one 240-character line with its paragraphs collapsed,
+    and any prose written before the turn's last text block was dropped, because
+    `pending_outcome` kept only the last one.
+    """
+    name = declared(doubles)
+    first = "Before I touch anything, here is what I found in the payments module."
+    long = (
+        "The mock clock was a second behind, which is why the charge test only "
+        "failed on the nightly run.\n\n"
+        "There are two ways to fix it. Freezing the clock in the fixture is the "
+        "smaller change and keeps the assertion exact, but it hides the fact "
+        "that the production path reads the clock twice. Threading a clock "
+        "through the charge call is more churn and it is the one that actually "
+        "removes the race.\n\n"
+        "I took the second one, because the first would have gone green while "
+        "leaving the bug in place."
+    )
+    assert len(long) > 240, "the fixture has to be longer than a leg caption"
+
+    write(claude_home, SID, [
+        prompt("Fix the failing integration test in the payments module"),
+        says(first),
+        calls("Bash", {"command": "pytest -q tests/test_payments.py"}),
+        says(long),
+    ])
+    service = Service(LoopbackTransport(), FakePool())
+    await service.hook({"session_id": SID, "cwd": "/tmp", "event": "Stop"})
+
+    events = service.store.since(name, 0)
+    said = [e.text for e in events if e.kind == "claude"]
+
+    # Both blocks survive, in order, byte for byte -- newlines included.
+    assert said == [first, long]
+    assert "\n\n" in said[1], "paragraphs must not be collapsed into one line"
+    assert not said[1].endswith("…")
+
+    # The leg caption is still short, still one line: that is the map's job and
+    # it is deliberately not the message.
+    outcome = next(e for e in events if e.kind == "outcome")
+    assert len(outcome.text) <= 240
+    assert "\n" not in outcome.text
+    assert outcome.text.endswith("…")

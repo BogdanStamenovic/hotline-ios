@@ -42,6 +42,15 @@ struct MapLayer: View {
     let seamDragging: Bool
     let onDrag: (SheetPhase) -> Void
     let onPurgeBefore: (Int) -> Void
+    /// **Tapping the grabber closes the map.**
+    ///
+    /// Every other panel in this app is dismissed by tapping its scrim
+    /// (`Controls`, `Purge`). The map has no scrim -- it is a full-screen blind
+    /// -- so it inherited no way out, and the only close was an upward seam
+    /// drag that has to *start* inside the top 90 pt. He reported the map as
+    /// unclosable, and that is why: the affordance was a 38x4 pt capsule that
+    /// looks decorative, with nothing listening to a tap on it.
+    let onClose: () -> Void
 
     /// The timeline's scroll, and the strip's cursor, as one value seen twice.
     @State private var head = Playhead()
@@ -134,7 +143,15 @@ struct MapLayer: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.bottom, 16)
+        // The `contentShape` was already here, which is the tell that a tap was
+        // meant to work: it exists to make the padding tappable, and nothing
+        // was ever attached to it.
         .contentShape(Rectangle())
+        .onTapGesture(perform: onClose)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Route for \(agent.name)")
+        .accessibilityHint("Double tap to close the route")
+        .accessibilityAddTraits(.isButton)
     }
 
     // MARK: - The timeline

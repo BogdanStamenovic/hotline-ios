@@ -225,6 +225,20 @@ def absorb(
             result.events += 1
         elif event.kind == "assistant":
             if event.text.strip():
+                # **The prose itself, in full.** It used to reach the phone only
+                # as the phase's `outcome`, and an outcome is deliberately
+                # `_one_line`d to OUTCOME_MAX because it is the *map's leg
+                # caption*. So every answer arrived on the phone collapsed to a
+                # single 240-character line -- and any prose written before the
+                # turn's last text block was dropped entirely, because
+                # `pending_outcome` only ever kept the last one.
+                #
+                # The caption is still built in `close()` below and still short,
+                # which is right for the map. This row is the message, and
+                # `ThreadView.said` has always rendered it with no line limit.
+                store.append_event(agent, "claude", event.text,
+                                   phase_id=phase_id or covering(at), at=at)
+                result.events += 1
                 pending_outcome = event.text
                 result.text_samples.append((at, len(event.text)))
         elif event.kind == "tool":

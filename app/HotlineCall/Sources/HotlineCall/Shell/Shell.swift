@@ -157,7 +157,8 @@ struct Shell: View {
                     MapLayer(agent: agent, channel: channel, progress: map, mo: mo,
                              seamDragging: mapDragging,
                              onDrag: slideMap,
-                             onPurgeBefore: { present(.purge(open, $0)) })
+                             onPurgeBefore: { present(.purge(open, $0)) },
+                             onClose: closeMap)
                         .allowsHitTesting(!locked)
                         .zIndex(Z.map)
                 }
