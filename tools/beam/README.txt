@@ -5,7 +5,11 @@ Served from the Arch box at http://100.72.2.62:8790/
 
 ONE COMMAND, on the laptop, with the phone plugged in and unlocked:
 
-    curl -fsSL http://100.72.2.62:8790/get.sh | bash
+    curl -fsSL http://100.114.148.69:8790/get.sh | bash
+
+That address is **pigion**, which stays up. The Arch box (100.72.2.62) serves
+the same kit and is the fallback, but it gets powered off -- so use pigion's.
+The script tries both anyway, whichever you paste.
 
 That fetches everything, checks it arrived intact, and runs the install.
 **Every download resumes.** If your link drops, run the same command again --
