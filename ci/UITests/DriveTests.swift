@@ -426,6 +426,20 @@ final class DriveTests: XCTestCase {
         }
         settle(2.5)
 
+        // **Ask the tree, do not photograph it.** Whether the agent's prose
+        // arrives whole is a question about the string that reached the view
+        // layer, and the filmstrip cannot answer it: it depends on scroll
+        // position, a blocked agent's answer card covers the newest rows, and
+        // three runs went by without the relevant frame ever being taken.
+        //
+        // §6's own trap is the tool here. `element.exists` != on screen --
+        // rows are in the accessibility tree with off-screen frames -- which is
+        // a menace when you are asking "can he tap it" and exactly what is
+        // wanted when you are asking "did the whole string get here".
+        //
+        // Printed, not attached. The .xcresult needs a Mac.
+        checkProse(app)
+
         mark("=== drive ends ===")
         attachTree(app, name: "final-tree")
         attachShot("final-shot")
@@ -589,6 +603,24 @@ final class DriveTests: XCTestCase {
     /// `.keepAlways` is load-bearing. An attachment defaults to
     /// `deleteOnSuccess`, so on a passing run -- the only kind worth comparing
     /// a design against -- every screenshot would be discarded before upload.
+    /// The stub injects two `claude` events whose text says what it is proving.
+    /// This reports on the one that matters: full length, paragraph breaks
+    /// intact, no ellipsis. See `ci/stub/daemon.py`.
+    private func checkProse(_ app: XCUIApplication) {
+        let head = "This paragraph exists so a screenshot can prove"
+        let tail = "the fix did not reach the device."
+        let found = app.staticTexts.allElementsBoundByIndex
+            .map(\.label)
+            .first { $0.contains(head) }
+        guard let text = found else {
+            print("PROSE NOT-FOUND no static text contains the marker")
+            return
+        }
+        let breaks = text.filter { $0 == "\n" }.count
+        print("PROSE chars=\(text.count) newlines=\(breaks) "
+              + "endsWithTail=\(text.hasSuffix(tail)) ellipsis=\(text.contains("\u{2026}"))")
+    }
+
     private func attachShot(_ name: String) {
         let a = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         a.name = name

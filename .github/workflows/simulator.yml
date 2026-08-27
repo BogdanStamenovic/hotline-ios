@@ -419,6 +419,8 @@ jobs:
             echo "frames ${#frames[@]}"
             echo
             grep -E "^MARK " out/test.log 2>/dev/null || echo "(no MARK lines)"
+            echo
+            grep -E "^PROSE " out/test.log 2>/dev/null || echo "(no PROSE line -- the check did not run)"
           } > publish/RUN.txt
 
           cd publish
