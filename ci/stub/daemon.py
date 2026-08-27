@@ -90,6 +90,60 @@ def rebase(events, span=1800.0):
 rebase(HISTORY["events"])
 rebase(FEED["events"])
 
+
+# --------------------------------------------------------------------------
+# CI-only prose, so the drive can exercise the path that carries it.
+#
+# `live-history.json` is a capture from a daemon that did not store assistant
+# prose, and it is **deliberately frozen** -- it is the only thing proving the
+# app degrades gracefully when a field is absent, and `app/wiretest/run.sh`
+# already had a bug once that quietly overwrote it. So it is not edited here.
+# These events are synthesised, live in this stub, and touch no fixture.
+#
+# They attach to the FIRST phase that has an outcome and pointedly not to the
+# second, so one screen shows both halves of the rule: where prose exists the
+# outcome caption is suppressed as a duplicate of it, and where prose does not
+# exist the outcome must still be drawn or the answer is lost outright. With no
+# prose anywhere -- which is what every run before this one had -- the skip is a
+# no-op and a green run says nothing about it either way.
+
+_PROSE_LEAD = "Before I touch anything: here is what the run is actually for."
+
+_PROSE_BODY = (
+    "This paragraph exists so a screenshot can prove the prose arrives whole.\n\n"
+    "Until 27 August the server stored an assistant answer only as the phase's "
+    "outcome, and an outcome is flattened onto one line and cut at 240 "
+    "characters because it is the caption the route map draws under a leg. So "
+    "every answer reached the phone as a single clipped line, and anything "
+    "written before the last block of a turn was dropped entirely.\n\n"
+    "If you can read this third paragraph, and the blank lines between the "
+    "three survived, then the text is not being truncated and not being "
+    "collapsed. If instead this ends in a single line with an ellipsis, the "
+    "fix did not reach the device."
+)
+
+
+def inject_prose(events):
+    outcomes = [e for e in events if e.get("kind") == "outcome" and e.get("phase")]
+    if not outcomes:
+        return events
+    target = outcomes[0]
+    seq = max(e["seq"] for e in events)
+    for text in (_PROSE_LEAD, _PROSE_BODY):
+        seq += 1
+        events.append({
+            "seq": seq,
+            "kind": "claude",
+            "text": text,
+            "at": target["at"],
+            "agent": target.get("agent"),
+            "phase": target["phase"],
+        })
+    return events
+
+
+inject_prose(HISTORY["events"])
+
 # The roster's own time fields, so the rows show live relative stamps and the
 # ELAPSED clock actually ticks.
 for a in ROSTER["agents"]:
