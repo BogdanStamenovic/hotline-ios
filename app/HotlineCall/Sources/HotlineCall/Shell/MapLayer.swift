@@ -138,20 +138,32 @@ struct MapLayer: View {
                     .text(.rowName)
                     .foregroundStyle(Theme.ink)
                 Spacer(minLength: 0)
+                Button(action: onClose) {
+                    Text("CLOSE")
+                        .text(.label(9.5))
+                        .foregroundStyle(Theme.ink)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(Theme.line2))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close the route")
             }
             .padding(.horizontal, Theme.edge)
         }
         .frame(maxWidth: .infinity)
         .padding(.bottom, 16)
-        // The `contentShape` was already here, which is the tell that a tap was
-        // meant to work: it exists to make the padding tappable, and nothing
-        // was ever attached to it.
+        // **The close is a real button, not a tap on this whole area.** The
+        // grabber *is* the seam's drag region (`accepts: { $0.y < 90 }`), so a
+        // tap gesture covering it would have been a child gesture competing
+        // with the ancestor `DragGesture` for the same pixels -- and trading
+        // "the map will not close" for "the map will not drag" is not a fix.
+        // A `Button` claims only its own bounds and leaves the drag intact.
+        //
+        // It is also visible, which is the actual complaint: he went looking
+        // for a way out and there was nothing to find. A 38x4 pt capsule reads
+        // as decoration even when it works.
         .contentShape(Rectangle())
-        .onTapGesture(perform: onClose)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Route for \(agent.name)")
-        .accessibilityHint("Double tap to close the route")
-        .accessibilityAddTraits(.isButton)
     }
 
     // MARK: - The timeline

@@ -602,6 +602,42 @@ class Store:
 
     # ---- events ----------------------------------------------------------
 
+    def has_event(self, agent_name: str, kind: str, at: float, text: str) -> bool:
+        """Has this exact row already been stored?
+
+        **This exists because ingest is not transactional.** `daemon._ingest`
+        runs `ingest.absorb()` -- which commits every row individually -- and
+        only afterwards calls `set_read_position`. A crash, a SIGTERM from
+        `systemctl restart`, or an exception between those two commits leaves
+        the rows written and the offset unmoved, so the next read re-emits the
+        identical slice. The `offset > size` branch in `_ingest` is worse: it
+        deliberately resets the offset to 0 and re-reads the transcript from the
+        beginning, which replays *everything*.
+
+        That was survivable while the only thing at stake was a 240-character
+        caption. It stopped being survivable when assistant prose started being
+        stored, because a replay now duplicates whole messages in his
+        transcript.
+
+        The real fix is one transaction spanning the writes and the offset;
+        that is a bigger change to a daemon he depends on from a train, so this
+        is the guard, and the wider gap is written up in
+        `docs/INGEST-REPLAY.md`.
+
+        `at` comes from the transcript record itself and `text` is the block
+        verbatim, so both are stable across a re-read -- which is exactly what
+        makes them a usable identity for a replayed row.
+        """
+        with self._lock:
+            row = self.db.execute(
+                # (kind, at) is the `events_at` index; the text compare is the
+                # cheap filter on what that leaves.
+                "SELECT 1 FROM events "
+                "WHERE kind = ? AND at = ? AND agent_name = ? AND text = ? LIMIT 1",
+                (kind, at, agent_name, text),
+            ).fetchone()
+        return row is not None
+
     def append_event(
         self,
         agent_name: str,

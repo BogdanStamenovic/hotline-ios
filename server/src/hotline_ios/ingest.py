@@ -236,9 +236,13 @@ def absorb(
                 # The caption is still built in `close()` below and still short,
                 # which is right for the map. This row is the message, and
                 # `ThreadView.said` has always rendered it with no line limit.
-                store.append_event(agent, "claude", event.text,
-                                   phase_id=phase_id or covering(at), at=at)
-                result.events += 1
+                # Guarded because ingest is not transactional: a replayed
+                # slice would otherwise post the whole message twice. See
+                # `Store.has_event`.
+                if not store.has_event(agent, "claude", at, event.text):
+                    store.append_event(agent, "claude", event.text,
+                                       phase_id=phase_id or covering(at), at=at)
+                    result.events += 1
                 pending_outcome = event.text
                 result.text_samples.append((at, len(event.text)))
         elif event.kind == "tool":

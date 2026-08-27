@@ -829,3 +829,38 @@ async def test_the_prose_reaches_the_phone_whole_and_not_as_a_caption(claude_hom
     assert len(outcome.text) <= 240
     assert "\n" not in outcome.text
     assert outcome.text.endswith("…")
+
+
+async def test_a_replayed_slice_does_not_post_the_prose_twice(claude_home, doubles):
+    """Ingest is not transactional: `_ingest` commits every row inside
+    `absorb()` and only then calls `set_read_position`. A crash or a SIGTERM in
+    between leaves the rows written and the offset unmoved, and the `offset >
+    size` branch re-reads the whole transcript on purpose. Both replay a slice
+    that was already stored.
+
+    That was survivable when a replay duplicated a 240-character caption. It is
+    not survivable now that it would duplicate a whole message.
+    """
+    name = declared(doubles)
+    # `.strip()`ped by `_events_of`, so the fixture is stripped too.
+    long = ("I fixed it.\n\n" + "Here is the reasoning, at length. " * 12).strip()
+    write(claude_home, SID, [
+        prompt("Fix the failing integration test"),
+        calls("Bash", {"command": "pytest -q"}),
+        says(long),
+    ])
+    service = Service(LoopbackTransport(), FakePool())
+
+    await service.hook({"session_id": SID, "cwd": "/tmp", "event": "Stop"})
+    first = [e.text for e in service.store.since(name, 0) if e.kind == "claude"]
+    assert first == [long]
+
+    # The replay: absorb the identical events a second time, which is exactly
+    # what the daemon does when the offset did not advance.
+    from hotline import transcript
+    from hotline_ios.daemon import _first_offset
+    events = transcript.events_since(SID, _first_offset(SID)).events
+    ingest.absorb(service.store, name, events, turn_ended=True)
+
+    again = [e.text for e in service.store.since(name, 0) if e.kind == "claude"]
+    assert again == [long], f"prose duplicated on replay: {len(again)} copies"

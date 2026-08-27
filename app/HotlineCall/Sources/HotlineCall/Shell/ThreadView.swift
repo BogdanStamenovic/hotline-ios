@@ -95,17 +95,35 @@ struct ThreadView: View {
 
     /// One flat list, indexed from the bottom so `k = 0` is the newest and
     /// arrives first. The staging table is written in those terms.
+    /// Phases whose prose is present in this thread as its own `claude` moment.
+    ///
+    /// **This set is the whole reason the outcome row still exists.** An
+    /// `outcome` is the *map's* leg caption -- the server `_one_line`s it to 240
+    /// characters on purpose -- so once the prose arrives as a `claude` moment,
+    /// drawing the outcome too just repeats the last paragraph under itself,
+    /// truncated. Skipping it unconditionally is wrong for a different reason:
+    /// the server only started sending `claude` moments on 27 Aug, and every
+    /// phase closed before that has an outcome and no prose at all. On his own
+    /// store that was 142 of 154 phases -- so an unconditional skip would have
+    /// silently erased the answer from nearly every conversation he has, which
+    /// is a far worse bug than the one it was tidying up.
+    private var answered: Set<String> {
+        var out: Set<String> = []
+        for moment in channel.moments where moment.kind == .claude {
+            if let phase = moment.phase { out.insert(phase) }
+        }
+        return out
+    }
+
     private var staged: [Row] {
         var out: [Row] = []
+        let answered = self.answered
         for moment in channel.moments {
-            // **`outcome` is not drawn here.** It is the *map's* leg caption --
-            // `_one_line`d to 240 characters by the server on purpose -- and
-            // since the agent's prose now arrives as its own `claude` moment,
-            // rendering it in the thread as well repeated the last paragraph
-            // directly under itself, truncated. The map still draws it, because
-            // `Route` is built from `channel.moments` in the store rather than
-            // from these rows.
-            if moment.kind == .outcome { continue }
+            // Yield to the prose only where the prose is actually there. An
+            // outcome with no phase id cannot be matched to one, so it is kept:
+            // showing a caption twice is recoverable, losing an answer is not.
+            if moment.kind == .outcome, let phase = moment.phase,
+               answered.contains(phase) { continue }
             out.append(Row(key: "m\(moment.seq)", k: 0, kind: .moment(moment)))
         }
         for note in channel.notes {
