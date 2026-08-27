@@ -41,6 +41,9 @@ jobs:
   drive:
     runs-on: macos-latest
     timeout-minutes: 60
+    # Needed by "Publish the filmstrip": the job pushes frames to a branch.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -127,6 +130,21 @@ jobs:
           echo "recorder pid $REC"
           sleep 2
 
+          # **Stills as well as video, and not as a duplicate of it.** The mp4
+          # is 110 MB, which is fine as an artifact and useless to anything that
+          # cannot download artifacts -- see the publish step below for why that
+          # matters here. A 2 s filmstrip is small enough to commit.
+          mkdir -p out/shots
+          ( i=0
+            while :; do
+              i=$((i + 1))
+              xcrun simctl io "$UDID" screenshot --type=png \
+                "out/shots/$(printf %03d "$i").png" >/dev/null 2>&1 || true
+              sleep 2
+            done ) &
+          SHOTS=$!
+          echo "filmstrip pid $SHOTS"
+
           set -o pipefail
           cd ci
           xcodebuild test-without-building \
@@ -146,7 +164,9 @@ jobs:
           kill -INT "$REC" 2>/dev/null || true
           for i in $(seq 1 20); do kill -0 "$REC" 2>/dev/null || break; sleep 1; done
           kill -9 "$REC" 2>/dev/null || true
+          kill "$SHOTS" 2>/dev/null || true
           sleep 1
+          echo "filmstrip frames: $(ls out/shots/*.png 2>/dev/null | wc -l)"
           ls -la out/
           # Say plainly whether the recorder produced anything. Run
           # 32923724565 went green having created no drive-video artifact at
@@ -363,6 +383,55 @@ jobs:
           else
             echo "FINAL FRAME NONE -- simctl io screenshot produced no file"
           fi
+
+      # **The only route by which the machine that writes this app can see it
+      # running.** Artifact download requires a GitHub token; the one on the
+      # workstation is expired and `gh auth login` needs a browser nobody is
+      # sitting at. `git` over SSH does work there, so CI pushes the frames to
+      # an orphan branch and the workstation fetches them.
+      #
+      # Force-pushed with no history on purpose: this branch is a window, not a
+      # record, and it must not grow without bound. Delete it and nothing is
+      # lost -- the same frames are in the artifacts for anyone who can reach
+      # them.
+      - name: Publish the filmstrip so a Linux box can look at it
+        if: always()
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          frames=(out/shots/*.png)
+          if [ -s out/final.png ]; then frames+=(out/final.png); fi
+          if [ ${#frames[@]} -eq 0 ]; then
+            echo "no frames to publish"
+            exit 0
+          fi
+
+          mkdir -p publish
+          for f in "${frames[@]}"; do
+            cp "$f" "publish/$(basename "$f")"
+            # `sips` ships with macOS. 420 px wide keeps a phone screenshot
+            # readable at roughly 60 KB rather than 1.5 MB.
+            sips --resampleWidth 420 "publish/$(basename "$f")" >/dev/null 2>&1 || true
+          done
+          {
+            echo "commit ${{ github.sha }}"
+            echo "run    ${{ github.run_id }}"
+            echo "frames ${#frames[@]}"
+            echo
+            grep -E "^MARK " out/test.log 2>/dev/null || echo "(no MARK lines)"
+          } > publish/RUN.txt
+
+          cd publish
+          git init -q
+          git checkout -q -b ci-shots
+          git config user.email "ci@hotline.local"
+          git config user.name "hotline ci"
+          git add -A
+          git commit -q -m "filmstrip for ${{ github.sha }} (run ${{ github.run_id }})"
+          git push -q --force \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            ci-shots
+          echo "published $(ls *.png | wc -l) frames to the ci-shots branch"
 
       - uses: actions/upload-artifact@v4
         if: always()
