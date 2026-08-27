@@ -377,6 +377,20 @@ final class DriveTests: XCTestCase {
                             thenHoldForDuration: 0.05)
         settle(1.0)
 
+        // The map's CLOSE button has never been watched either: the map was
+        // only ever confirmed to shut by dragging the grabber. It is a real
+        // `Button`, unlike the header chips, so whether it answers is the
+        // control for whether `onTapGesture` on a chip is the problem.
+        let closeButton = app.buttons["Close the route"]
+        print("VIEW map-close exists=\(closeButton.exists) "
+              + "hittable=\(closeButton.exists && closeButton.isHittable)")
+        if closeButton.exists {
+            closeButton.tap()
+            settle(1.5)
+            print("VIEW map-close-worked routeGone=\(!app.buttons["map-grabber"].exists) "
+                  + "chipBack=\(app.buttons["route-chip"].exists)")
+        }
+
         mark("map: drag the blind back up to close (grabber lives above y<90)")
         at(0.5, 0.10).press(forDuration: 0.08,
                             thenDragTo: at(0.5, 0.02),
@@ -642,6 +656,31 @@ final class DriveTests: XCTestCase {
               + "w=\(Int(frame.width)) h=\(Int(frame.height)) "
               + "hittable=\(chip.isHittable) enabled=\(chip.isEnabled)")
         print("VIEW window \(app.windows.firstMatch.frame)")
+
+        // **What is actually at that point.** `isHittable` says a hit test at
+        // the centre does not resolve to this element; it does not say what it
+        // resolves to instead, and that is the only fact that matters. Both a
+        // plain tap and a coordinate tap changed nothing, so something is over
+        // it -- print everything whose frame contains the chip's centre, top
+        // of the tree last.
+        let point = CGPoint(x: frame.midX, y: frame.midY)
+        let covering = app.descendants(matching: .any).allElementsBoundByIndex
+            .filter { $0.exists && $0.frame.contains(point) }
+        print("VIEW covering-count \(covering.count)")
+        for element in covering.suffix(12) {
+            let f = element.frame
+            print("VIEW covering type=\(element.elementType.rawValue) "
+                  + "id=\(element.identifier) "
+                  + "frame=\(Int(f.minX)),\(Int(f.minY)),\(Int(f.width)),\(Int(f.height)) "
+                  + "label=\(element.label.prefix(40))")
+        }
+
+        // The same pattern, twice more, so the answer is not specific to one
+        // chip. `more-chip` is the same `onTapGesture` on the same row; the
+        // map's CLOSE is a real `Button`, and it has never been verified either
+        // -- the map was only ever confirmed to close by dragging the grabber.
+        let more = app.buttons["more-chip"]
+        print("VIEW more-chip exists=\(more.exists) hittable=\(more.exists && more.isHittable)")
 
         let before = seen()
         print("VIEW default sent=\(before.sent) tool=\(before.tool) prose=\(before.prose)")
