@@ -48,46 +48,53 @@ Both are server-side, both confirmed by him or against the running daemon:
   `mirror_degraded` on hotline's `/health` (port 8788), detail on
   `/api/v1/mirror` behind the key.
 
-## 3. Built, tested, and deliberately NOT shipped
+## 3. Shipped at 23:20, and verified on a running app first
 
-The two-view app change: the thread defaults to his conversation (`sent` + his
-own messages) with the transcript behind a button, and the header row is
-rethought rather than grown. **He chose that default with the emptiness warning
-in front of him**, so it is not softened and no old row is backfilled.
+`HotlineCall.ipa` sha256 `5948d2fd…`, on his laptop, pigion and here.
+`HotlineCall-prev.ipa` deliberately still `26669c8c…` — the build actually on
+his phone, because a rollback target should be one known to work there.
 
-**The `.ipa` is held because of §4.** That is the right call at 23:55 as much as
-at 20:00: a build whose new button may not respond is worse than no build, and
-he already has a working app.
+The thread now defaults to his conversation (`sent` + his own messages) with the
+transcript behind a button, and the header row is rethought rather than grown.
+**He chose that default with the emptiness warning in front of him**, so it is
+not softened and no old row is backfilled.
 
-## 4. THE OPEN BUG — read this before touching the header
+It was held all evening and released only when a simulator run showed each claim
+true, which is the first time anything in this project shipped on observation
+rather than on "it compiles":
 
-**The FULL TRANSCRIPT toggle does not fire.** Measured on a running simulator,
-not inferred:
+    VIEW default sent=true tool=false prose=false
+    VIEW full    sent=true tool=true  prose=true
+    VIEW toggled=true
+    PROSE chars=657 newlines=4 endsWithTail=true ellipsis=false
+    VIEW map-close-worked routeGone=true chipBack=true
 
-    frame 107,215 114x21 inside a 420x912 window
-    isHittable = false
-    plain tap: nothing.  coordinate tap: nothing.
+## 4. The tap bug — CLOSED, and it was never only mine
 
-Ruled out by reading: `chrome` leaves hitTesting default and its offset is zero
-at rest; `.channel` is `hitTesting: e > 0.55`, true at rest; `BackStrip` is 44 pt
-wide (the full width it receives is only the divisor in its drag maths); the
-query resolves and returns the right label; the route chip in the same row takes
-a drag. Geometry is dead — the frame is on screen.
+**Nothing in that header row had ever responded to a tap.** The chips were
+`Chip` + `.onTapGesture`, and on a running simulator that resolved at a valid
+on-screen frame with `isHittable == false`, inert to both a plain tap and a
+coordinate tap. Wrapping the same `Chip` in a `Button` fixed it: same row, same
+position, `hittable=true`, `toggled=true`.
 
-**Last action taken:** the header controls are now `Button`s instead of `Chip` +
-`.onTapGesture` (commit `c3579a9`), which is a fix and a diagnosis at once. **A
-CI run for it was in flight when this was written — read its result first.**
+**So `RETIRE` and `DELETE HISTORY` were dead since they shipped** — they carried
+the identical pattern, and DELETE HISTORY was moved into that row precisely
+because he could not find it anywhere else. That is very likely what his "rethink
+that row" instinct was detecting. Converted with the rest.
 
-**`RETIRE` and `DELETE HISTORY` carried the identical pattern.** If the tap never
-fired for them, they have been dead since they shipped. **This is a hypothesis
-with NO reading yet** — the run before last died mid-drive. Do not repeat it as
-fact; he has already been told it is unconfirmed.
+Stated precisely, because the distinction matters: what is *observed* is that the
+gesture form failed and the `Button` form works, on this row, measured. What is
+*inferred* is that the other two chips failed for the same reason. Nobody has
+watched RETIRE or DELETE fire.
 
-If it holds, the urgency is the opposite of what it looks like: what he lost is
-the *ability* to delete, not protection from deleting. `Purge.swift` already
-requires a 1500 ms hold against server counts it re-checks immediately before
-the destructive call, so a working tap opens a confirmation and destroys
-nothing.
+Nothing was ever at risk from the dead delete: the chip only opens the purge
+sheet, which has always required a 1500 ms hold against counts it re-checks
+immediately before the destructive call. What he lost was the *ability* to
+delete, not protection from deleting.
+
+**The map's CLOSE button is now verified too** (`map-close-worked routeGone=true`).
+Earlier notes claiming it was verified were wrong — what had been verified was
+the grabber *drag*. It is observed now.
 
 ## 5. How to see the app without a GitHub token
 
