@@ -125,6 +125,29 @@ screen — reappearing in the measuring layer. **When a machine can tell you, ma
 it tell you.** The two changes that broke the cycle were putting the compiler
 error and the failure reason into `RUN.txt`.
 
+## 6b. Three things worth carrying, not just recording
+
+**He was reporting a fault, not a preference.** He objected to that header row
+twice without being able to say why, and both readings — mine and the relay's —
+took it as a layout opinion. The plan became "fewer chips, better arranged".
+The actual cause was that none of the chips fired. **On a second vague complaint
+about the same thing, go looking for a defect before redesigning**: a tidier
+arrangement of dead buttons would have shipped, and he would have objected a
+third time.
+
+**Two firsts landed on the same day, and they are the same point.** A
+server-side fix became the first change in this project ever confirmed on his
+real phone; the `.ipa` became the first thing ever shipped because a run was
+watched doing it rather than because it compiled. Everything else here has been
+believed on the strength of a green build.
+
+**One error was caught by its own author.** I recorded the map's CLOSE button as
+verified when only the grabber *drag* was, and corrected it unprompted. That is
+worth noting precisely because this repo's tally runs the other way: nine holes
+found by recipients, almost none by authors. It is a counter-example to the
+pattern, not another instance of it — and the thing that made it possible was
+writing down *what* had been observed rather than *that* something had been.
+
 ## 7. Two open items that are real
 
 - **`docs/INGEST-REPLAY.md`.** Ingest is not transactional: rows are committed
