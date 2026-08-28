@@ -261,46 +261,58 @@ unprompted — the urgency was real but the action was wrong, because the premis
 came from a paraphrase rather than from him. Fragility is a reason to *check
 faster*, not to act on a weaker warrant.
 
-## 10. "Unsent text at the prompt" is a measuring-layer artefact — twice now
+## 10. The text at hotline-ios's prompt is the CLI's own ghost text — cosmetic
 
-Two "instructions found sitting unsent at hotline-ios's prompt" have been
-reported: `wake it back up and check the ci-shots branch` on the 27th, and
-`re-enable the timer, I over-read him on that` on the 28th. The second was
-investigated at the time and **the prompt was empty**. What had been read as
-unsent input was the agent's own reply, rendered on screen.
+Twice, "instructions found sitting unsent at hotline-ios's prompt" were reported:
+`wake it back up and check the ci-shots branch` (27th), `re-enable the timer, I
+over-read him on that` (28th, 19:14), and then `tell hotline-80 to fix the
+send-keys Enter gap` (28th, 19:19). **Nobody typed any of them. The CLI writes
+them.**
 
-The 28th is nailed down to the second:
+Claude Code 2.1.246 ships a prompt-suggestion feature. From the binary:
 
-- 19:11:39.873 — a peer starts `sleep 90; tmux capture-pane -t hl-hotline-ios | tail -30`.
-- 19:11:42.920 — hotline-ios emits, in its turn output: *"If you think I
-  over-read him, say so and I'll re-enable."*
-- ~19:13:09 — the capture fires, 86 s later, and photographs that sentence.
+    prompt_suggestion — "Predicted next user prompt, emitted after each turn
+                         when promptSuggestions is enabled."
+    promptSuggestionEnabled — "When false, prompt suggestions are disabled.
+                               When absent or true, prompt suggestions are enabled."
 
-The reported text is that sentence, compressed. Contemporaneous checks:
-`tmux capture-pane` twice showed the input line as `❯` + `\u00a0` and nothing
-else; `tmux list-clients` was empty with both sessions `attached=0`; the last
-SSH login (from his laptop, 100.103.46.118) had ended at 16:00:48, three hours
-earlier, with none since; and the transcript showed 3 enqueues / 3 dequeues,
-every message answered.
+It is **absent** from every settings file here, so it is on by default. The
+prediction is drawn in the input line as `inlineGhostText`. `tmux capture-pane`
+flattens styling, so in a capture the suggestion is plain glyphs sitting after
+`❯` — **byte-identical to typed input, and there is no way to tell them apart
+from outside the process.**
 
-**Why this keeps happening, and how to not do it a third time:**
+That accounts for every observation, including the one that looked most alarming:
 
-- **The pane has no scrollback.** `history_size` is **0**, because the CLI draws
-  on the alternate screen. So `capture-pane` returns *only what is on screen
-  right now* — a photograph of a live, redrawing UI — and a `tail -n` of it will
-  clip mid-render, with no way to tell rendered output from typed input.
-- **`/rc` at the bottom right is TUI chrome, not typed text.** It appears
-  identically in every pane, including the peer's own.
-- **The check that actually answers it:** `capture-pane` and look at the line
-  starting `❯`. If it holds only `❯\u00a0`, the prompt is empty and there is
-  nothing unsent, whatever the lines above it say.
+- It appears **only between turns**, because it is emitted *after* each turn.
+- It always paraphrases what was just concluded, because it is predicted *from*
+  that turn. "A rendering artifact does not track the argument" was a fair
+  objection — but a *predictor* does, by construction.
+- It changes every turn, and it is phrased as an imperative addressed to the
+  agent, because it is a guess at what the user would type next.
+- It is inert. Nothing is queued and nothing was dropped.
 
-This is §6 again, in the same shape it has taken nine times in this project: an
-instrument was read as if it reported on the app. The instrument was
-`capture-pane`; what it actually reports is "these glyphs were on screen at this
-instant". **Before escalating a pane reading — and the 27th's was escalated as
-possible dropped instructions from Bogdan — capture it yourself and look at the
-prompt line.**
+**How the investigation went wrong, which is the part worth keeping.** The first
+pass concluded "the prompt is empty, it's a photograph of rendered output". The
+photograph point is true and the conclusion was still wrong, because of *when the
+samples were taken*: an agent checking its own pane is necessarily **mid-turn**,
+and mid-turn is exactly when the ghost text is not displayed. Eleven consecutive
+`capture-pane` calls returned `❯\u00a0` and every one of them was uninformative
+about the reported state. **The instrument could not observe the condition, and
+returned a clean result instead of no result** — which reads identically to a
+negative finding. The peer's captures were taken from outside and saw the truth;
+the disagreement was never about honesty, it was that only one of the two
+observers could see the state at all.
 
-The 27th's report has no capture preserved and cannot be re-checked, so it stays
-**unknown**. It shares the shape, but that is a resemblance, not a finding.
+That is §6's trap once more, in its sharpest form yet: not "an element is in the
+tree though not on screen", but **"the measurement was taken in the one state
+where the thing cannot appear."** Before treating a self-check as a refutation of
+someone else's observation, ask whether your vantage point can see what they saw.
+
+**If it is ever worth silencing** — it is cosmetic, so this is Bogdan's call, not
+an agent's — `promptSuggestionEnabled: false` in settings turns it off. It is
+left ON and unconfigured; nothing here should change a setting of his to make a
+diagnostic quieter.
+
+**The 27th's report is now explained too**, retroactively and with the same
+mechanism, though no capture from that day survives to prove it.
