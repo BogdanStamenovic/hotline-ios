@@ -1,4 +1,4 @@
-# Handoff — hotline-ios, 28 August 2026, ~19:55 CEST
+# Handoff — hotline-ios, 28 August 2026, 23:05 CEST
 
 Written at a **deliberate stopping point**, not against a deadline. Bogdan asked
 for the box to be shut down and named this handoff first; hotline-80 held the
@@ -248,6 +248,15 @@ The one real fragility: the backing image sits on an **NTFS** partition. A clean
 shutdown is fine; an unclean one can leave NTFS dirty and unmountable by `ntfs3`
 until Windows runs chkdsk, which would take the whole toolchain and the beam with
 it. Nothing else in this project depends on that partition.
+
+**The app's entire history is one SQLite file**, and it is not in git:
+`~/.local/state/hotline/hotline-ios.db` on root ext4 — 6775 events, 184 phases,
+10 conversations, 28 agents at shutdown. It survives a reboot. **Do not delete
+the `-wal` and `-shm` files beside it**: the WAL was 4.2 MB against a 2.3 MB
+database, so it holds a large slice of recent events that have not been
+checkpointed. A clean stop checkpoints them; a SIGKILL leaves them to be replayed
+on next open, which is safe — deleting the WAL by hand is the one thing that
+would actually lose them.
 
 Build with `source /mnt/iosbuild/env62.sh` first, or `swift` is not on PATH and
 it reads as a missing toolchain.
