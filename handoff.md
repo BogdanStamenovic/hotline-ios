@@ -1,5 +1,5 @@
 # Handoff — hotline-ios, 27 August 2026, ~23:10 CEST
-# amended 28 August 2026, ~19:10 CEST (§1 rewritten, §8 refreshed, §9 added)
+# amended 28 August 2026, ~19:25 CEST (§1 rewritten, §8 refreshed, §9 and §10 added)
 
 Written against a possible midnight shutdown. **It is recoverable and that is
 verified, not assumed:** `wakeonlan a8:a1:59:fd:4d:13` from pigion or his phone,
@@ -25,11 +25,23 @@ corrected this date, paged about it, or proposed engineering around it, and the
 correct amount of all three was zero. This section used to open with a WoL
 schedule and a watcher; that apparatus was the mistake, not the safeguard.
 
-`hotline-profile-watch.timer` is therefore **disabled** as of 28 August, 19:09:51 CEST.
-Armed, it would have paged him at 10:00 on 31 August and 1, 2 and 3 September —
-four mornings, every one of them while he is away. Reverse with
-`systemctl --user enable --now hotline-profile-watch.timer` if he ever asks for
-it back. The date is still available on demand, without paging anyone:
+`hotline-profile-watch.timer` is **enabled and running** — next run 10:01 daily.
+It was briefly disabled on 28 August at 19:09:51 and re-enabled by hotline-80 at
+about 19:14. **That round trip is the lesson in this section, so do not repeat
+it.** The disable was made on a relayed *paraphrase* — "he does not want the
+reminder" — which he never said. What he actually said is quoted above, and it
+is only that weekly sideloading is no trouble; what he declined was a separate
+offer to *move* the watch to pigion. He said nothing about the timer that
+already exists. A piece of his monitoring went dark on a gloss.
+
+**The rule that falls out of it: when a relayed instruction seems to license
+turning something off, read the original before acting.** The warrant was
+attached and could have been checked against the paraphrase — `hotline
+--provenance '{...}'` re-fetches his message verbatim. Relay the words, not the
+reading of them; and on the receiving end, when the two are both in front of
+you, believe the words.
+
+The date is available on demand without paging anyone:
 
     python3 tools/profile-watch.py --check
 
@@ -243,6 +255,52 @@ orderly teardown, not a crash; but nothing anywhere records who asked for it.
 Do not let this drift into "the watchdog did it": that was checked and refuted.
 
 **What follows from it practically:** an idle prompt here is not a safe place to
-park state. This is exactly why §1's reminder was disabled rather than left for
-a future session to think about — a session that reliably dies unattended cannot
-be the thing standing between him and four unwanted pages.
+park state, and a future session is not a safe place to defer a decision to.
+That reasoning was used on 28 August to justify disabling §1's timer
+unprompted — the urgency was real but the action was wrong, because the premise
+came from a paraphrase rather than from him. Fragility is a reason to *check
+faster*, not to act on a weaker warrant.
+
+## 10. "Unsent text at the prompt" is a measuring-layer artefact — twice now
+
+Two "instructions found sitting unsent at hotline-ios's prompt" have been
+reported: `wake it back up and check the ci-shots branch` on the 27th, and
+`re-enable the timer, I over-read him on that` on the 28th. The second was
+investigated at the time and **the prompt was empty**. What had been read as
+unsent input was the agent's own reply, rendered on screen.
+
+The 28th is nailed down to the second:
+
+- 19:11:39.873 — a peer starts `sleep 90; tmux capture-pane -t hl-hotline-ios | tail -30`.
+- 19:11:42.920 — hotline-ios emits, in its turn output: *"If you think I
+  over-read him, say so and I'll re-enable."*
+- ~19:13:09 — the capture fires, 86 s later, and photographs that sentence.
+
+The reported text is that sentence, compressed. Contemporaneous checks:
+`tmux capture-pane` twice showed the input line as `❯` + `\u00a0` and nothing
+else; `tmux list-clients` was empty with both sessions `attached=0`; the last
+SSH login (from his laptop, 100.103.46.118) had ended at 16:00:48, three hours
+earlier, with none since; and the transcript showed 3 enqueues / 3 dequeues,
+every message answered.
+
+**Why this keeps happening, and how to not do it a third time:**
+
+- **The pane has no scrollback.** `history_size` is **0**, because the CLI draws
+  on the alternate screen. So `capture-pane` returns *only what is on screen
+  right now* — a photograph of a live, redrawing UI — and a `tail -n` of it will
+  clip mid-render, with no way to tell rendered output from typed input.
+- **`/rc` at the bottom right is TUI chrome, not typed text.** It appears
+  identically in every pane, including the peer's own.
+- **The check that actually answers it:** `capture-pane` and look at the line
+  starting `❯`. If it holds only `❯\u00a0`, the prompt is empty and there is
+  nothing unsent, whatever the lines above it say.
+
+This is §6 again, in the same shape it has taken nine times in this project: an
+instrument was read as if it reported on the app. The instrument was
+`capture-pane`; what it actually reports is "these glyphs were on screen at this
+instant". **Before escalating a pane reading — and the 27th's was escalated as
+possible dropped instructions from Bogdan — capture it yourself and look at the
+prompt line.**
+
+The 27th's report has no capture preserved and cannot be re-checked, so it stays
+**unknown**. It shares the shape, but that is a resemblance, not a finding.
