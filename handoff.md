@@ -1,4 +1,5 @@
 # Handoff — hotline-ios, 27 August 2026, ~23:10 CEST
+# amended 28 August 2026, ~19:10 CEST (§1 rewritten, §8 refreshed, §9 added)
 
 Written against a possible midnight shutdown. **It is recoverable and that is
 verified, not assumed:** `wakeonlan a8:a1:59:fd:4d:13` from pigion or his phone,
@@ -10,29 +11,59 @@ reading in full. Everything below supersedes their §1.
 
 ---
 
-## 1. Dates, corrected twice today
+## 1. The signing profile — a date, not an emergency
 
-**The profile expires 3 September 16:24. He returns 9 September.** The 2
-September 04:16 in older docs is dead: the seven days run from *install*, and he
-installed at 16:24 today, which restarted the clock. Ask the authority, never
-re-derive:
+**The profile expires 3 September 18:33.** He returns 9 September. That is the
+whole of it as a planning fact.
+
+**Do not page him about it, do not treat it as a risk, and do not build anything
+around it.** His words, 28 August, asked to be passed here verbatim: *"Its not my
+first time sideloading apps. Its really not a rpoblem doing it weekly"*. He also
+declined an offer to move the expiry watch to pigion so the reminder could not be
+missed while travelling — he does not want the reminder. Five agents have now
+corrected this date, paged about it, or proposed engineering around it, and the
+correct amount of all three was zero. This section used to open with a WoL
+schedule and a watcher; that apparatus was the mistake, not the safeguard.
+
+`hotline-profile-watch.timer` is therefore **disabled** as of 28 August, 19:09:51 CEST.
+Armed, it would have paged him at 10:00 on 31 August and 1, 2 and 3 September —
+four mornings, every one of them while he is away. Reverse with
+`systemctl --user enable --now hotline-profile-watch.timer` if he ever asks for
+it back. The date is still available on demand, without paging anyone:
+
+    python3 tools/profile-watch.py --check
+
+**What IS worth carrying is narrow, technical, and a genuine trap** for whoever
+reads that number next. Three different clocks get confused for each other:
+
+- `profile-watch` reports the **account's** soonest matching ACTIVE profile.
+- The phone's seven days run from the **install**, not the build or the issue —
+  installing again restarts the clock, which is why this date has moved twice.
+- The staged `.ipa` **carries no `embedded.mobileprovision` and no
+  `_CodeSignature` at all** — verified 28 August against
+  `/mnt/iosbuild/beam/HotlineCall.ipa`. xtool signs at install time. So the
+  staged artefact has no expiry of its own; asking it when it dies is a category
+  error.
+
+Ask the authority rather than re-deriving:
 
     /mnt/iosbuild/toolchain/xtool.AppImage ds profiles list
 
-**The re-sign is now cheap.** The kit is on his laptop at `~/hotline` (tailnet
-host `arch`, 100.103.46.118 — *not* the host called `laptop`, which is a
-different Windows box). `xtool auth` there is logged in with a token good to
-**August 2027**, so it costs no password and no 2FA:
+The re-sign itself is cheap and needs no password or 2FA — the kit is on his
+laptop at `~/hotline` (tailnet host `arch`, 100.103.46.118 — *not* the host
+called `laptop`, a different Windows box), and `xtool auth` there holds a token
+good to August 2027:
 
     cd ~/hotline && ./sideload.sh          # phone on the cable, unlocked
 
-`HotlineCall-prev.ipa` sits beside it — byte-identical to what is on his phone —
-so a rollback is a local `cp`, no network. It is deliberately absent from
+`HotlineCall-prev.ipa` sits beside it, byte-identical to what is on his phone, so
+a rollback is a local `cp` with no network. It is deliberately absent from
 `SHA256SUMS`, because `get.sh` runs `sha256sum -c` over that file.
 
-`wake-archserver-for-profile.timer` on pigion fires WoL on five mornings around
-the expiry so this box's watcher can page him. Best-effort: the BIOS half of WoL
-is still unproven.
+**Loose end for whoever owns pigion:** `wake-archserver-for-profile.timer` is
+still there, firing WoL on five mornings around the expiry purely to let this
+box's watcher page him. That watcher is now off, so the timer wakes a machine to
+do nothing. It is the same declined reminder, one host over.
 
 ## 2. Live on his phone right now, no reinstall needed
 
@@ -163,8 +194,10 @@ writing down *what* had been observed rather than *that* something had been.
 
 ## 8. Machine state
 
-`hotline-ios`, `hotlined`, `hotline-beam`, `hotline-profile-watch.timer` all
-active. `/mnt/iosbuild` mounted — if it looks empty after a boot the mount is
+`hotline-ios`, `hotlined`, `hotline-beam` all active — but they are **user**
+units, so `systemctl is-active hotlined` on the *system* manager answers
+`inactive` and reads exactly like a dead stack. Use `systemctl --user`.
+`hotline-profile-watch.timer` is deliberately **disabled**, see §1. `/mnt/iosbuild` mounted — if it looks empty after a boot the mount is
 down, not the toolchain gone: `findmnt /mnt/iosbuild || sudo systemctl start
 mnt-iosbuild.mount`. Build with `source /mnt/iosbuild/env62.sh` first, or
 `swift` is not on PATH and it reads as a missing toolchain.
@@ -174,3 +207,42 @@ Tests: 484 hotline, 210 hotline-ios server, 272 wire. All green.
 Both repos pushed and clean. **The `hotline` repo holds someone else's
 uncommitted work** in `PROGRESS.md`, `handoff.md`, `provenance.py`, `router.py`
 and `test_provenance.py` — stage by path there, never `git add -A`.
+
+## 9. This session died once, unattended, and nothing says why
+
+Session `3018dcb5` — a hotline-ios worker resumed at 13:34 CEST on 28 August —
+ended at **18:27:28 CEST** and was not restarted. Recorded here because it will
+matter to whoever is mid-task when it happens again.
+
+**What the transcript says:** nothing about a cause. Its last turn completed
+*normally* at 14:27:24 CEST — `stop_hook_summary` with `preventedContinuation:
+false` and `hookErrors: []`, then a `turn_duration` row. Then four hours of
+silence at an idle prompt. Then, at 16:27:27Z, a single `queue-operation`
+enqueue of a task-notification (a background memory-merge, status `killed`) with
+**no matching dequeue** — the message arrived and nothing was there to consume
+it. That un-dequeued enqueue is the bounce a peer noticed.
+
+**What the journal adds, and what it rules out:**
+
+- The tmux scope `tmux-spawn-dc5e694a-…` logged its resource summary at
+  `18:27:28` — 4 h 53 min 16 s wall clock, which lands its start at 13:34:12,
+  matching the session's first enqueue exactly. So that scope *was* this
+  session, and 18:27:28 is the death to the second. A peer's estimate of
+  "between 15:37 and 19:00" can be tightened to that.
+- **Not OOM.** Zero `oom-kill`/`out of memory` entries all day; peak RSS for the
+  scope was 432.8 M on a 15 GiB box.
+- **Not `hotline-watchdog`**, despite finishing one second earlier at 18:27:27
+  and looking like the obvious culprit. Read it: it only ever *starts* a worker,
+  never kills one, it watches `hotline-80` rather than hotline-ios, and
+  `watchdog.log` has no entry after 12:49.
+- No SIGTERM, no systemd stop, no segfault, no scope failure recorded.
+
+**So the honest answer is that the cause is unknown.** The shape on record —
+background task reaped one second before the scope's last process exits — is an
+orderly teardown, not a crash; but nothing anywhere records who asked for it.
+Do not let this drift into "the watchdog did it": that was checked and refuted.
+
+**What follows from it practically:** an idle prompt here is not a safe place to
+park state. This is exactly why §1's reminder was disabled rather than left for
+a future session to think about — a session that reliably dies unattended cannot
+be the thing standing between him and four unwanted pages.
