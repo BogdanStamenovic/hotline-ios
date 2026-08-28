@@ -1,9 +1,28 @@
-# Handoff — hotline-ios, 27 August 2026, ~23:10 CEST
-# amended 28 August 2026, ~19:25 CEST (§1 rewritten, §8 refreshed, §9 and §10 added)
+# Handoff — hotline-ios, 28 August 2026, ~19:55 CEST
 
-Written against a possible midnight shutdown. **It is recoverable and that is
-verified, not assumed:** `wakeonlan a8:a1:59:fd:4d:13` from pigion or his phone,
-WoL proven end to end earlier today. Do not rush anything out ahead of it.
+Written at a **deliberate stopping point**, not against a deadline. Bogdan asked
+for the box to be shut down and named this handoff first; hotline-80 held the
+power off until it was written, so nothing here was rushed and nothing was cut
+mid-turn. That is the opposite of the 27th, when a *time-based* shutdown took
+agents mid-work.
+
+**The box is recoverable, and this time the persistence was checked rather than
+the setting:**
+
+    wakeonlan a8:a1:59:fd:4d:13        # from pigion or his phone
+
+`ethtool` at runtime does not survive a reboot, so what matters is what re-arms
+it. Three layers, all verified on 28 August: `wol-enp4s0.service` is **enabled,
+active, and was observed firing on this boot** (12:47:44, logging `Wake-on: g`);
+`/etc/udev/rules.d/81-wol-enp4s0.rules` re-arms on device add; and
+NetworkManager's own `802-3-ethernet.wake-on-lan` is `magic`, so NM reinforces
+rather than silently overrides it. **Unverified: the BIOS half** — whether the
+board wakes from S5. Older docs contradict each other on this and it cannot be
+tested without powering down. Treat wake as very likely, not certain.
+
+**Read §1 before you do anything about the signing profile, and §10 before you
+report anything about a pane.** Those are the two things most likely to send the
+next reader down a hole that was already dug and filled today.
 
 The previous handoff is `docs/HANDOFF-2026-08-27-1100.md`. Its §2 corrections
 and the older `docs/HANDOFF-2026-08-27-0220.md` §6 "Traps" are both still worth
@@ -204,21 +223,49 @@ writing down *what* had been observed rather than *that* something had been.
   into it. Removed. `conftest` now sets `HOTLINE_MIRROR=0` suite-wide and
   `tests/test_no_live_mirror.py` fails if that is ever dropped.
 
-## 8. Machine state
+## 8. Machine state, as of the 28 August shutdown
 
-`hotline-ios`, `hotlined`, `hotline-beam` all active — but they are **user**
-units, so `systemctl is-active hotlined` on the *system* manager answers
-`inactive` and reads exactly like a dead stack. Use `systemctl --user`.
-`hotline-profile-watch.timer` is deliberately **disabled**, see §1. `/mnt/iosbuild` mounted — if it looks empty after a boot the mount is
-down, not the toolchain gone: `findmnt /mnt/iosbuild || sudo systemctl start
-mnt-iosbuild.mount`. Build with `source /mnt/iosbuild/env62.sh` first, or
-`swift` is not on PATH and it reads as a missing toolchain.
+`hotline-ios`, `hotlined`, `hotline-beam` all active at shutdown — but they are
+**user** units, so `systemctl is-active hotlined` on the *system* manager answers
+`inactive` and reads exactly like a dead stack. Use `systemctl --user`. This
+nearly went into a status report as "the stack is down".
 
-Tests: 484 hotline, 210 hotline-ios server, 272 wire. All green.
+`hotline-profile-watch.timer` is **enabled and running**, next run 10:01 daily.
+It was briefly disabled on the 28th and re-enabled the same hour — see §1 for why
+that round trip happened, because the reason matters more than the state.
+
+**The mounts come back on their own — verified on this boot, not assumed.**
+`/mnt/iosbuild` is a loop-mounted ext4 image whose backing file lives on
+`/mnt/windows`, so it is a two-level dependency; `/etc/fstab` handles it
+correctly with `nofail` and `x-systemd.requires-mounts-for=/mnt/windows`. On the
+12:47:39 boot, `/mnt/windows` mounted at 12:47:44 and `/mnt/iosbuild` at
+12:47:45, both unattended. Earlier handoffs said to expect it down after a boot;
+that is over-cautious, but keep the check, because **`nofail` means a failure is
+silent** — an empty `/mnt/iosbuild` is the mount being down, not the toolchain
+gone: `findmnt /mnt/iosbuild || sudo systemctl start mnt-iosbuild.mount`.
+
+The one real fragility: the backing image sits on an **NTFS** partition. A clean
+shutdown is fine; an unclean one can leave NTFS dirty and unmountable by `ntfs3`
+until Windows runs chkdsk, which would take the whole toolchain and the beam with
+it. Nothing else in this project depends on that partition.
+
+Build with `source /mnt/iosbuild/env62.sh` first, or `swift` is not on PATH and
+it reads as a missing toolchain.
+
+Tests: 484 hotline, 210 hotline-ios server, 272 wire. All green — **as of the
+27th**; nothing was run today, because nothing in the app or server was touched.
 
 Both repos pushed and clean. **The `hotline` repo holds someone else's
 uncommitted work** in `PROGRESS.md`, `handoff.md`, `provenance.py`, `router.py`
 and `test_provenance.py` — stage by path there, never `git add -A`.
+
+**Snapshots:** there are now **zero** and the schedule is off, at his
+instruction. Root is at 48%, 36 GB free. Take one by hand *only* before something
+that can stop the box booting (`sudo timeshift --create --comments "before X"
+--tags O` — tag O, never D). Nothing in this project qualifies. Note that his
+global `CLAUDE.md` still says this root has no snapshot capability at all; that
+is stale — it has one, in rsync mode, it is simply manual now. That file is his
+and was deliberately not edited.
 
 ## 9. This session died once, unattended, and nothing says why
 
@@ -316,3 +363,52 @@ diagnostic quieter.
 
 **The 27th's report is now explained too**, retroactively and with the same
 mechanism, though no capture from that day survives to prove it.
+
+## 11. What today actually was, and what is waiting
+
+**No code changed today.** Not one line of the app or the server. Everything in
+this file dated the 28th is documentation, machine state, and four corrections —
+which is worth saying plainly so the next reader does not go hunting for a diff
+that does not exist. The shipped `.ipa` is still yesterday's `5948d2fd…`, and
+`HotlineCall-prev.ipa` is still `26669c8c…`, both hashes re-checked at shutdown.
+
+**The four corrections, because each one was a wrong belief someone acted on:**
+
+1. The profile expiry was being treated as an emergency. It is not. §1.
+2. A relayed *paraphrase* got a piece of his monitoring switched off. §1.
+3. "Unsent text at hotline-ios's prompt" was the CLI's own ghost text, three
+   times, once escalated as possibly his instructions being dropped. §10.
+4. "This root has no snapshot capability" (his global `CLAUDE.md`) is stale, and
+   separately there are now zero snapshots and no schedule. §8.
+
+**Nothing was mid-flight at shutdown.** No build running, no test suite, no
+background task, no uncommitted work in either of my repos, nothing staged and
+unpushed. A power cut at this instant would have lost nothing.
+
+### Still open, unchanged and not degraded
+
+- **`docs/INGEST-REPLAY.md` — ingest is not transactional.** Rows are committed
+  and only *then* is the read offset advanced, so a crash or SIGTERM replays a
+  slice, and the offset-past-EOF branch re-reads the whole transcript on purpose.
+  `claude` events are guarded on `(agent, kind, at, text)`. `tool`, `phase`,
+  `outcome` and `compact` are **not**. It has a guard; it is not fixed. Do not
+  let this drift into "handled" — it has survived three handoffs by sounding
+  handled.
+- **Seeing the app still requires the `ci-shots` branch.** The `gh` token here is
+  invalid and `gh auth login` needs a browser, so artifacts are unreachable.
+  `git fetch origin ci-shots --force && git show origin/ci-shots:RUN.txt`. Poll
+  by comparing the `commit` line in `RUN.txt`, **not** `gh run list` — the
+  unauthenticated API is 60 req/hour and exhausting it reports live runs as
+  "not-listed", which looks identical to a workflow that never triggered.
+- **RETIRE and DELETE HISTORY have still never been watched firing.** §4 is
+  precise about this and should stay precise: the `Button` conversion is observed
+  working on the view toggle only. The other two are *inferred* fixed.
+
+### The thing this project keeps doing
+
+Nine times now, a finding has turned out to be the instrument rather than the
+app — and today it happened twice more, in the *diagnostic* layer both times: a
+peer's `capture-pane` read as a prompt buffer, and then my own eleven
+`capture-pane` calls read as a refutation when my vantage point could not see the
+state at all. §10 has the general form. The short version: **before reporting
+what an instrument shows, ask what it is physically able to show.**
