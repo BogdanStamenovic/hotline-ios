@@ -92,10 +92,20 @@ def main():
         return 0
 
     when = f"{soonest['expiry']:%A %d %B at %H:%M}"
+    # An expired profile still reads ACTIVE on the account, so this branch runs
+    # with a NEGATIVE `hours` every day after the date passes. Without the split
+    # below it renders as "expires <past date> -- about -27 hours from now":
+    # future tense, negative number, repeating daily and getting worse.
+    if left <= timedelta(0):
+        lede = (f"The app's signing profile EXPIRED {when}, "
+                f"{abs(hours) / 24:.1f} days ago. It will not launch on your "
+                f"phone until it is re-signed.")
+    else:
+        lede = (f"The app's signing profile expires {when} -- about "
+                f"{hours:.0f} hours from now. After that it stops launching "
+                f"on your phone until it is re-signed.")
     page([PAGE, "--no-wait", "--source", "the hotline iOS build",
-                    f"The app's signing profile expires {when} -- about "
-                    f"{hours:.0f} hours from now. After that it stops launching "
-                    f"on your phone until it is re-signed.\n\nOn the laptop, "
+                    f"{lede}\n\nOn the laptop, "
                     f"phone plugged in and unlocked:\n\n    {INSTALL_CMD}",
                     "--context",
                     "This is the 7-day free-provisioning clock, not a fault. "
