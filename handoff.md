@@ -1,3 +1,129 @@
+# Handoff — the phone call carries audio, 10 September 2026, 02:20 CEST
+
+Written by `media-wire` against a shutdown. **Written for a reader starting
+cold**, because my context dies with this box and the one job left needs someone
+who was not here.
+
+---
+
+## READ THIS FIRST: barge-in has never been on a phone
+
+It is **built, swept, unit-tested and deployed live**, and it has **never once
+run on a real call**. Everything else below was proven on a phone; this was not.
+
+    BARGE_IN_WINDOW = 10, BARGE_IN_HITS = 6      media/voicecall.py
+    HIS_LEVEL_PERCENTILE = 85                     (was 60)
+
+**The test costs one sentence of his time.** Ring him and, while it is speaking a
+reply, talk over it. It should stop mid-sentence. That is the whole test — no
+script, no scoring, thirty seconds.
+
+**Two things will silently make that test impossible:**
+
+1. `HOTLINE_IOS_CALL_SESSION` must be **unset**. With it at `0` there is no reply
+   in progress to interrupt — only a 1.4 s filler, which is sent
+   non-interruptibly on purpose. I unset it in the user manager at 01:55; a
+   `systemctl --user set-environment` from anyone re-breaks it invisibly.
+2. **Restart `hotline-ios` after any pull.** The daemon loads the code once. A
+   call at 00:59 ran the pre-fix build because it started at 00:59:24 and the fix
+   landed at 01:23, and that would have read as the fix failing. Check
+   `PENDING_RX_CAP` is 150 in the running process, not just in git.
+
+## What was wrong, and how each was found
+
+Three independent causes of the silence he heard, where the brief named two.
+
+| cause | how it was found |
+|---|---|
+| the daemon built `SipTransport()` bare, so `on_answer` was never passed | reading `build_transport` |
+| `SIP_MEDIA_HOST` unset — the SDP offered `192.168.1.139` | reading, then pinging his handset over the tailnet to check the replacement was routable |
+| `talk.py` called `VoiceCall.PRIMING_SECONDS`, deleted by `1ad8e2b` | reading `talk.py`, which the brief's grep never covered |
+
+**The brief's Cause 1 was overstated and the correction matters more than the
+bug.** It said "nothing anywhere passes `on_answer`", citing
+`grep -rn 'VoiceCall' src/ tests/`. `server/talk.py` is in the repo root, in
+neither directory, and line 361 passed it. Positive claims in a handoff come from
+reading code; negative ones come from a search, and a search is only as wide as
+its paths. **`talk.py` was the worked example for this whole task** — Serbian,
+never-hang-up, "ćao is a greeting", pre-rendered fillers, the hallucination
+blocklist — all learned on live calls on 8 Sept. It was folded into
+`conversation.py` rather than replaced.
+
+**And the ACK was the one that mattered.** He answered a call, heard everything,
+and was cut off 37.24 s in with audio flowing perfectly both ways. `grep` for
+`Record-Route` in `ring/sip.py` returned **nothing**: the ACK went to his
+address-of-record with no route set, never reached his handset, and RFC 3261
+§13.3.1.4 has the far end retransmit its 200 for 64·T1 and then send a BYE.
+Invisible for as long as `_finish_answered` ACKed and hung up in the same breath.
+The second call ran **110 s with zero 200 OK retransmissions**.
+
+## Measured on his own phone, his own line
+
+Numbers and their limits: **`docs/MEASURED-telephony-voice.md`**. Tools that
+re-run any of it without ringing him: **`server/bench/`** (`bench.py`,
+`score.py`, `noise_bench.py`, `barge_sweep.py`, `echo_check.py`, README), pointed
+at a call with `HOTLINE_IOS_BENCH_DIR`.
+
+- **Two live calls**, 87 s and 110 s. Zero SRTP auth failures, zero late frames.
+- **No echo on his line.** `echo_check.py` reads 0.020 correlation, against
+  **1.000** for a deliberately injected −6 dB leak and 0.019 for none. The
+  instrument was validated in both directions *before* its answer was believed;
+  it recovered the injected ratio to 0.02 dB. This is what made the barge-in
+  change safe, and it is the only reason to trust the 0.020.
+- **ASR is 38.0% WER on 166 words and that is a ceiling, not a result.**
+  `large-v3` 38.0%, `sam8000-turbo-serbian` 40.4% — **four word errors apart on
+  166, tied on the second call.** They are indistinguishable. `large-v3` stays as
+  incumbent; `sam8000` costs four errors and frees 832 MiB and 0.13 s a turn,
+  which is the trade to reach for if anything wants the GPU back.
+- **Transcribing phrases while he talks is free**: chunked and whole-file both
+  score exactly 63/166.
+
+## What comes next, in the order I would do it
+
+1. **Put barge-in on a phone.** Above.
+2. **Trim the leading ambient off a retained turn.** The lost words now arrive —
+   his dictated-number line went 72.7% → 18.2% — but **the total WER did not
+   move** (38.6% → 37.3%, one word) and lines 1–2 regressed from *perfect* to
+   40% and 33%. My best guess is my own fix: three seconds of retained pre-roll
+   gives Whisper more leading silence to invent over, and turn 1 was 7.4 s at 86%
+   silence. A hypothesis with an obvious experiment and no code written. **Do not
+   inherit my claim that two thirds of the WER is recoverable by capture — it
+   holds per-line and does not hold for the total.**
+3. **Analyse `outbound.wav` beyond echo.** It is recorded and frame-aligned
+   (`alignment.json`) and only `echo_check.py` reads it.
+4. **~1000 reference words** would settle `large-v3` vs `sam8000`. Ten more calls
+   of this length. Not worth his time on its own; bank it when he calls anyway.
+
+## Do not "clean these up"
+
+- **`BARGE_IN_WINDOW`/`HITS` replaced 25-consecutive** because that rule fires on
+  **0 of 11** of his real turns — his longest unbroken run is 16 frames. Two live
+  calls logged zero barge-ins while he was deliberately talking over us. It is
+  not a tuning preference and reverting it disables the feature silently.
+- **`HIS_LEVEL_PERCENTILE = 85`.** At 60 it measured how much silence a turn
+  contained, returning `his_level` from 0.0010 to 0.0776 — a factor of 78.
+- **Retention is deliberately independent of `interruptible`**, and `say()`
+  flushes only before its first sentence. Tying them together is what deleted his
+  words during fillers.
+- **`recordings/` is gitignored: his voice, public repo.** His spoken phone
+  number is in `reference.json`. A scorer's digit lookup nearly carried fragments
+  of it into a public commit — **check derived files, not just the audio.**
+- **Recording is opt-in** via `HOTLINE_IOS_RECORD_DIR`, left **on** at his own
+  request for the benchmark (Discord `1547375010862203060`). Deleting that line
+  turns it off.
+
+## State at shutdown
+
+`origin/main` at `a46961f`, working tree clean, 366 tests passing, mypy clean,
+ruff at its 12-finding baseline. Nine commits tonight, `9f19b8d`..`a46961f`.
+
+One correction inherited from hotline-80, recorded because it was nearly acted
+on twice: **the 06:00 UTC wake is already 08:00 CEST**, already daily, already
+carries `then_do=poweroff`. He asked for 8am; it is already there, and "moving
+it" would have pushed it to 10:00 his time.
+
+---
+
 # Handoff — hotline-ios, 28 August 2026, 23:05 CEST
 
 Written at a **deliberate stopping point**, not against a deadline. Bogdan asked
