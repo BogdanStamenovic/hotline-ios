@@ -12,9 +12,14 @@ taking, back-channels and yielding to interruption are the model's job, and a
 gate in front of it would turn a duplex model back into a walkie-talkie.
 
 Why no ASR or cvoiced: PersonaPlex at context 3000 takes ~7.3 GiB of the 4060's
-8 GiB, so the call cannot share the GPU with Whisper or the Serbian TTS. The
-transcript is the model's own text stream; his side is recorded but not
-transcribed.
+8 GiB, so the call cannot share the GPU with Whisper or the Serbian TTS. Both sides
+are transcribed after hang-up, once the model has released the GPU.
+
+Mid-call lookups (`--context-file`): a watcher on his side (CPU Whisper + Haiku)
+flags questions that need the calling agent's facts; the engine is HELD silent with a
+"let me check" filler, an answerer (Haiku over the context file, plus a sandboxed
+read-only bash) replies or abstains, and the answer is teacher-forced into PersonaPlex
+(INJECTRAW), which then says it. See lookup/ and docs/DUPLEX-CALLS.md.
 """
 
 from __future__ import annotations
@@ -29,13 +34,15 @@ from typing import Callable
 
 import numpy as np
 
+from .lookup.labels import Lookup, labelled_turns
 from .media.duplex import PERSONAPLEX, DuplexEngine
 from .media.voicecall import FRAME_MS, SdpError, VoiceCall, parse_sdp_answer
 
 log = logging.getLogger(__name__)
 
 LAB = Path(os.environ.get("HOTLINE_IOS_DUPLEX_LAB", str(Path.home() / "data/duplex-lab")))
-DEFAULT_CMD = str(LAB / "pp-stream/run-pp-stream")
+# pp-stream2 = pp-stream + the fd-3 control channel; identical output when idle (duplex-lab E0)
+DEFAULT_CMD = str(LAB / "pp-stream/run-pp-stream2")
 FREE_GPU = LAB / "pp-stream/free-gpu"
 FAIL_CLIP = LAB / "pp-stream/engine-failed.wav"
 def free_gpu() -> None:
@@ -60,7 +67,15 @@ ANSWER_HOLD_S = float(os.environ.get("HOTLINE_IOS_DUPLEX_HOLD_S", "1.5"))
 OUT_QUEUE_FRAMES = 2
 
 
-def brief_prompt(reason: str, context: str = "", source: str = "") -> str:
+# The v3 framing that took delivery of injected answers from 2/12 to 8/12 in the
+# end-to-end fake calls (duplex-lab, 2026-10-16), together with the persona line below.
+LOOKUP_PERSONA = ("You do not know anything about his systems beyond this message; when he asks, say you will "
+                  "check, and when you are told the answer, say it to him right away, before anything else.")
+INJECT_ANSWER = "Bogdan asked: {q} Claude's answer: {a} Say this answer to him now."
+INJECT_PASS_ON = "Claude does not have that. Say to him now: I don't have that, I'll pass the question on."
+
+
+def brief_prompt(reason: str, context: str = "", source: str = "", lookups: bool = False) -> str:
     """The persona prompt for a call placed by an agent: what to tell him and ask him.
 
     PersonaPlex has no tool loop and no way to look anything up mid-call, so the
@@ -74,6 +89,8 @@ def brief_prompt(reason: str, context: str = "", source: str = "") -> str:
         parts.append(f"Background: {context.strip()}")
     parts.append("Greet him, deliver the message accurately and early, ask your question, "
                  "then listen and reply briefly and conversationally.")
+    if lookups:
+        parts.append(LOOKUP_PERSONA)
     return " ".join(parts)
 
 
@@ -82,7 +99,7 @@ class DuplexCall:
 
     def __init__(self, *, prompt: str = "", voice: str = "", note: Callable[[str, str], None],
                  deliver: Callable[[str], None], hung_up: Callable[[], bool] | None,
-                 record_dir: Path | None = None, label: str = "") -> None:
+                 record_dir: Path | None = None, label: str = "", context_text: str | None = None) -> None:
         self.note = note
         self.deliver = deliver
         self.hung_up = hung_up
@@ -107,8 +124,25 @@ class DuplexCall:
         self.engine = DuplexEngine(cmd, log=quiet, spec=PERSONAPLEX)
         self.setup_error: str | None = None
         self.setup_seconds: float | None = None
+        # mid-call lookups: on when the calling agent wrote a context file and a key exists
+        self.answerer = self.watch = None
+        self.lookups: list[Lookup] = []
+        self.lookup_note = ""
+        self.lookup_setup_s: float | None = None
+        self.began: float | None = None
+        if context_text:
+            from .lookup import claude_api
+            if claude_api.available():
+                from .lookup.answerer import Answerer
+                from .lookup.callwatch import CallWatch
+                self.answerer = Answerer(context_text)
+                self.watch = CallWatch(self._on_lookup)
+            else:
+                self.lookup_note = "lookups off: no Claude API key on this box"
         self._ready = threading.Thread(target=self._start, daemon=True, name="pp-start")
         self._ready.start()
+        self._lookup_ready = threading.Thread(target=self._start_lookups, daemon=True, name="lookup-start")
+        self._lookup_ready.start()
 
     def _start(self) -> None:
         try:
@@ -119,12 +153,45 @@ class DuplexCall:
             self.setup_error = str(exc)
             log.exception("%s failed to start", self.kind)
 
+    def _start_lookups(self) -> None:
+        """At ring time, beside the prefill: sandbox check, Haiku prompt cache, watcher's
+        Whisper + decision connection. Measured ~3 s, under the 10-17 s prefill."""
+        if not self.answerer:
+            return
+        t0 = time.monotonic()
+        try:
+            self.answerer.warm()
+            self.watch.warm()
+            self.lookup_setup_s = round(time.monotonic() - t0, 2)
+            log.info("lookups ready in %.1fs (bash %s)", self.lookup_setup_s, "on" if self.answerer.bash else "off")
+        except Exception as exc:  # noqa: BLE001 -- lookups are a nice-to-have: the call goes on without them
+            log.exception("lookups failed to start; the call goes on without them")
+            self.lookup_note = f"lookups off: {type(exc).__name__}: {exc}"[:200]
+            self.answerer = self.watch = None
+
     def wait_ready(self, timeout: float = 60.0) -> bool:
-        """Block until the model has prefilled. Called BEFORE the phone rings, so a
-        model that cannot start costs a failed call, never him answering to silence
-        (2026-10-15 19:16: it did exactly that, an OOM abort during prefill)."""
+        """Block until the model has prefilled and the lookups are warm. Called BEFORE
+        the phone rings, so a model that cannot start costs a failed call, never him
+        answering to silence (2026-10-15 19:16: it did exactly that, an OOM abort
+        during prefill). Lookups that fail to warm switch off; they do not fail the call."""
         self._ready.join(timeout)
+        self._lookup_ready.join(max(5.0, timeout / 2))
         return self.engine.ready.is_set() and not self.engine.dead.is_set() and not self.setup_error
+
+    def _on_lookup(self, u) -> None:
+        """Watcher thread: he asked something that needs the context. Hold, answer, inject."""
+        lk = Lookup(u.text, u.t_end, round(time.monotonic() - (self.began or time.monotonic()), 2))
+        self.engine.command("HOLD")
+        self.lookups.append(lk)
+
+        def answer() -> None:
+            text, abstained = self.answerer.ask(u.text)
+            lk.abstained = abstained
+            body = INJECT_PASS_ON if abstained else INJECT_ANSWER.format(q=u.text, a=text)
+            self.engine.command("INJECTRAW " + " ".join(body.split()))
+            log.info("lookup %r -> %s", u.text, "passed on" if abstained else text)
+
+        threading.Thread(target=answer, daemon=True, name="lookup-answer").start()
 
     def close(self) -> None:
         self.engine.close()
@@ -192,7 +259,10 @@ class DuplexCall:
         while not pump.inbox.empty():
             pump.inbox.get_nowait()
         began = time.monotonic()
+        self.began = began
         self.answer_offset = len(pump.wire_out or [])
+        if self.watch:
+            self.watch.start()
         tick = FRAME_MS / 1000.0
         next_tick = time.monotonic()
         silence = bytes(call.frame_samples * 2)
@@ -215,6 +285,8 @@ class DuplexCall:
             except Exception:  # queue.Empty
                 frame = silence
             self.engine.push(frame)
+            if self.watch:
+                self.watch.feed(frame, call.rate)
             if pump.queued() < OUT_QUEUE_FRAMES:
                 pump.enqueue([self.engine.pull(call.frame_samples)])
             n += 1
@@ -228,8 +300,18 @@ class DuplexCall:
                 if time.monotonic() - began > MAX_SECONDS:
                     self.ended = f"max duration {MAX_SECONDS:.0f}s"
                     break
+        if self.watch:
+            self.watch.stop()
+        # the engine reports when each injection finished, in model frames since `began`
+        done = [f * 0.08 for kind, f in self.engine.events if kind == "INJECTED"]
+        for lk, t in zip(self.lookups, done, strict=False):
+            lk.t_injected = round(t, 2)
         self.stats = {
             "seconds": round(time.monotonic() - began, 1),
+            "lookups": [vars(lk) for lk in self.lookups],
+            "lookup_setup_s": self.lookup_setup_s,
+            "lookup_note": self.lookup_note,
+            "passed_on": list(self.answerer.passed_on) if self.answerer else [],
             "setup_seconds": self.setup_seconds,
             "underruns": self.engine.underruns,
             "frame_ms": self.engine.stats[-1][1:] if self.engine.stats else None,
@@ -281,6 +363,14 @@ class DuplexCall:
         except Exception:
             log.exception("could not save the duplex recording")
         turns = self._transcribe(st, call.rate)
+        # recording time -> call time (the model was first fed answer_offset frames in)
+        offset = getattr(self, "answer_offset", 0) * FRAME_MS / 1000.0
+        turns = labelled_turns([(t - offset, who, text) for t, who, text in turns], self.lookups)
+        passed = list(self.answerer.passed_on) if self.answerer else []
+        if passed:
+            turns.append((float("inf"), "claude", "[passed on to you, not answered on the call] " + " | ".join(passed)))
+        if self.lookup_note:
+            turns.append((float("inf"), "claude", f"[{self.lookup_note}]"))
         if not any(who == "you" for _, who, _ in turns):
             # place() blocks until a "you" entry arrives, so there must be one.
             turns.append((float("inf"), "you", "(nothing transcribed from his side)"))
@@ -342,11 +432,7 @@ class DuplexCall:
         except Exception:
             log.exception("duplex transcript failed; returning the model's text stream only")
             return fallback
+        # one entry per Whisper segment: the labels need each segment's own time;
+        # labelled_turns merges consecutive same-speaker, same-label segments afterwards
         turns.sort(key=lambda t: t[0])
-        merged: list[tuple[float, str, str]] = []
-        for t, who, text in turns:
-            if merged and merged[-1][1] == who:
-                merged[-1] = (merged[-1][0], who, merged[-1][2] + " " + text)
-            else:
-                merged.append((t, who, text))
-        return merged
+        return turns

@@ -717,7 +717,7 @@ class Service:
             self._cool_models()
 
     def _prepare_duplex(self, doorbell: Any, target: CallTarget, conversation: str,
-                        loop: Any) -> tuple[list[Any], list[Any], str]:
+                        loop: Any, context_text: str | None = None) -> tuple[list[Any], list[Any], str]:
         """Start PersonaPlex for every link that can hold the call and wait until it
         is READY. Runs in an executor, BEFORE the ring: if the model cannot start,
         the call fails without his phone ever ringing.
@@ -734,11 +734,12 @@ class Service:
         links = holds_calls(doorbell)
         if not links:
             return [], [], "no transport here can hold an answered call"
-        prompt = brief_prompt(target.reason, target.context, target.caller_id)
+        prompt = brief_prompt(target.reason, target.context, target.caller_id, lookups=bool(context_text))
         handlers = [DuplexCall(prompt=prompt, note=append,
                                deliver=lambda text: append("you", text),
                                hung_up=getattr(link, "far_end_hung_up", None),
-                               label=f"{target.caller_id}: {target.reason}")
+                               label=f"{target.caller_id}: {target.reason}",
+                               context_text=context_text)
                     for link in links]
         for handler in handlers:
             if not handler.wait_ready(90.0):
@@ -929,8 +930,13 @@ class Service:
         prepared = None
         if engine == "personaplex":
             loop = asyncio.get_running_loop()
+            context_text, why = _read_context_file(str(body.get("context_file", "") or ""))
+            if why:
+                from hotline.httpd import HttpError
+
+                raise HttpError(400, why)
             links, handlers, why = await loop.run_in_executor(
-                None, self._prepare_duplex, doorbell, target, conversation, loop)
+                None, self._prepare_duplex, doorbell, target, conversation, loop, context_text)
             if why:
                 # Not rung at all. A model that is not up must cost a failed call,
                 # not him answering to silence.
@@ -3036,6 +3042,28 @@ def build_voice() -> tuple[Any, Any, Any]:
         log.error("no holding phrases: %s", exc)
         fillers = None
     return speaker, transcriber, fillers
+
+
+CONTEXT_FILE_MAX_BYTES = 400_000   # ~100k tokens; past ~50k the answerer gets worse anyway
+
+
+def _read_context_file(path: str) -> tuple[str | None, str]:
+    """The calling agent's context file for mid-call lookups -> (text, error). No path, no lookups.
+
+    Read by the daemon (same user as the caller) so the content never travels over HTTP.
+    """
+    if not path:
+        return None, ""
+    p = pathlib.Path(path).expanduser()
+    if not p.is_absolute():
+        return None, f"context_file must be an absolute path, got {path!r}"
+    try:
+        data = p.read_bytes()
+    except OSError as exc:
+        return None, f"cannot read context_file {path}: {exc.strerror}"
+    if len(data) > CONTEXT_FILE_MAX_BYTES:
+        return None, f"context_file is {len(data)} bytes; the limit is {CONTEXT_FILE_MAX_BYTES}"
+    return data.decode("utf-8", "replace"), ""
 
 
 def holds_calls(doorbell: Any) -> list[Any]:

@@ -117,6 +117,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "loop. 'personaplex': an English full-duplex speech model (PersonaPlex-7B "
         "on the local GPU) holds the whole call; the reason and --context become its persona prompt; the result is a Whisper transcript of both sides",
     )
+    parser.add_argument(
+        "--context-file",
+        default="",
+        metavar="PATH",
+        help="with --engine personaplex: a file of facts for mid-call lookups. When he asks "
+        "something the voice cannot know, Claude Haiku answers from this file (and read-only "
+        "commands on this box) or passes the question back to you. Start it with a "
+        "'## FOR THIS CALL' section; format in docs/DUPLEX-CALLS.md",
+    )
     parser.add_argument("-q", "--quiet", action="store_true", help="suppress non-error output")
     return parser
 
@@ -166,6 +175,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             wait=not args.no_wait,
             transport=args.transport,
             engine=args.engine,
+            context_file=os.path.abspath(args.context_file) if args.context_file else "",
         )
     except CallTimeout as exc:
         # The request outlived its deadline. If the daemon answered a fresh

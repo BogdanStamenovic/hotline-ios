@@ -26,6 +26,9 @@ telegram = ["telethon>=1.44"]
 # 24 kHz speech to 8 kHz with no anti-aliasing and folds the noise straight into
 # the band Whisper listens to. The TTS is cvoiced over HTTP and needs nothing.
 voice = ["numpy>=2", "soxr>=0.5", "faster-whisper>=1.1"]
+# Mid-call lookups on a duplex call (--engine personaplex --context-file): the watcher's
+# LOOKUP/NONE decision and the answerer go to Claude Haiku over the Messages API.
+duplex = ["anthropic>=1.15"]
 dev = [
   "pytest>=8.0,<10",
   "pytest-asyncio>=0.23,<2",

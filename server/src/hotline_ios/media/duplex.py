@@ -69,6 +69,9 @@ class DuplexEngine:
         self._primed = False
         self.prime = int(WIRE_RATE * spec.prime_s)
         self.proc: subprocess.Popen | None = None
+        self._ctl_w: int | None = None
+        # pp-stream2's control events: ("INJECT"|"INJECTED"|"HOLD"|..., model frame index)
+        self.events: list[tuple[str, int]] = []
 
     def use_wire_rate(self, rate: int) -> None:
         """Set the telephone leg's rate once the call is answered.
@@ -91,8 +94,18 @@ class DuplexEngine:
 
     def start(self, timeout: float = 120.0) -> float:
         t0 = time.monotonic()
+        # Commands (HOLD, INJECTRAW ...) go to the engine on fd 3, one per line. A child
+        # that never reads fd 3 (plain pp-stream) is unaffected.
+        ctl_r, self._ctl_w = os.pipe()
+
+        def child() -> None:
+            os.dup2(ctl_r, 3)
+
         self.proc = subprocess.Popen(self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, env=self.env, bufsize=0)
+                                     stderr=subprocess.PIPE, env=self.env, bufsize=0,
+                                     # 3 as well: close_fds runs after preexec_fn
+                                     pass_fds=(ctl_r, 3), preexec_fn=child)
+        os.close(ctl_r)
         threading.Thread(target=self._stderr_loop, daemon=True).start()
         threading.Thread(target=self._stdout_loop, daemon=True).start()
         if not self.ready.wait(timeout) or self.dead.is_set():
@@ -109,6 +122,10 @@ class DuplexEngine:
             elif line.startswith("TXT "):
                 _, idx, *rest = line.split(" ", 2)
                 self.text.append((int(idx), rest[0] if rest else ""))
+            elif line.split(" ", 1)[0] in ("INJECT", "INJECTED", "HOLD", "MUTE", "RELEASE"):
+                parts = line.split()
+                if len(parts) > 1 and parts[1].isdigit():
+                    self.events.append((parts[0], int(parts[1])))
             elif line.startswith("STAT "):
                 self.stat_lines.append(line)
                 parts = line.split()
@@ -183,6 +200,16 @@ class DuplexEngine:
                 self._out8_len -= n
         return (np.clip(x, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
 
+    def command(self, line: str) -> bool:
+        """Send one control line to the engine (pp-stream2: HOLD, MUTE, RELEASE, INJECT, INJECTRAW)."""
+        if self._ctl_w is None or "\n" in line:
+            return False
+        try:
+            os.write(self._ctl_w, (line + "\n").encode())
+            return True
+        except OSError:
+            return False
+
     def buffered(self) -> int:
         with self._lock:
             return self._out8_len
@@ -199,3 +226,9 @@ class DuplexEngine:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait()
+        if self._ctl_w is not None:
+            try:
+                os.close(self._ctl_w)
+            except OSError:
+                pass
+            self._ctl_w = None
