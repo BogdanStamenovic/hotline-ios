@@ -166,6 +166,29 @@ def test_watcher_ignores_quiet_line_noise(monkeypatch):
     assert seen == []
 
 
+@pytest.mark.parametrize("rate,chunk", [(48000, 960), (48000, 961), (24000, 480), (8000, 160), (48000, 700)])
+def test_watcher_keeps_every_sample_at_any_rate_and_chunk_size(monkeypatch, rate, chunk):
+    # The 01:34 live call (Opus, 48 kHz in 960-sample chunks) lost ~35% of his audio: soxr's
+    # output per chunk is not a whole number of 20 ms frames and the remainder was dropped,
+    # so Whisper heard chopped speech and the watcher clock ran at 0.64x the call. Every
+    # earlier test fed 8 kHz or 16 kHz, where the loss was 4% or nothing.
+    heard = []
+    w = CallWatch(on_lookup=lambda u: None)
+    w._whisper = types.SimpleNamespace(transcribe=lambda audio, **kw: (heard.append(audio.size), ([types.SimpleNamespace(text="x")], None))[1])
+    monkeypatch.setattr(w, "_decide", lambda text: False)
+    n = lambda s: int(s * rate)
+    speech = (0.3 * np.sin(np.arange(n(2.0)) / 3)).astype(np.float32)
+    x = np.concatenate([np.zeros(n(1.0), np.float32), speech, np.zeros(n(2.0), np.float32)])
+    w.start()
+    for i in range(0, x.size, chunk):
+        w.feed((x[i:i + chunk] * 32767).astype("<i2").tobytes(), rate)
+    w.stop()
+    assert abs(w._t - 5.0) <= 0.06, w._t                   # call clock == audio fed (soxr latency aside)
+    assert len(heard) == 1
+    assert 2.0 * 16000 <= heard[0] <= 2.6 * 16000            # 2 s of speech + up to 0.5 s hangover, none lost
+    assert 1.95 <= w.utterances[0].t_end <= 3.1
+
+
 # ---- context file ---------------------------------------------------------------------
 def test_context_file_rules(tmp_path):
     from hotline_ios.daemon import CONTEXT_FILE_MAX_BYTES, _read_context_file

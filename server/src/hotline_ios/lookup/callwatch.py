@@ -55,6 +55,7 @@ class CallWatch:
         self._q: queue.Queue = queue.Queue()
         self._whisper = None
         self._resamplers: dict[int, object] = {}
+        self._carry = np.zeros(0, np.float32)
         self._t = 0.0
         self._buf: list[np.ndarray] = []
         self._in_speech = False
@@ -105,7 +106,13 @@ class CallWatch:
             if rate != self.RATE:
                 rs = self._resamplers.setdefault(rate, soxr.ResampleStream(rate, self.RATE, 1, dtype="float32"))
                 x = rs.resample_chunk(x)
-            for i in range(0, x.size - F + 1, F):
+            # soxr's output per chunk is not a whole number of frames (a 960-sample Opus
+            # chunk at 48 kHz comes out as 0, 490, 0, 489 ... samples): the remainder is carried, never
+            # dropped. Dropping it lost 35% of his audio on the 01:34 Opus call.
+            x = np.concatenate([self._carry, x])
+            whole = x.size - x.size % F
+            self._carry = x[whole:]
+            for i in range(0, whole, F):
                 f = x[i:i + F]
                 self._t += 0.02
                 loud = float(np.sqrt(np.mean(f ** 2))) > self.thr
