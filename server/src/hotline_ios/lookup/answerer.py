@@ -48,17 +48,27 @@ _NARRATION = re.compile(r"\s*(let me|i need to (check|look)|i'll (check|look)|ch
 
 
 def spoken(text: str) -> str:
-    """At most two plain sentences, no markdown, no narration openers."""
+    """One plain sentence, no markdown, no narration openers. PersonaPlex drops long answers
+    (2/12 delivered with two-sentence answers in the end-to-end tests), and with a large
+    context the model stops keeping to the one-sentence rule by itself."""
     t = re.sub(r"[*_`#>|]+", "", text)
     t = re.sub(r"^\s*[-•]\s*", "", t, flags=re.MULTILINE)
     t = re.sub(r"^(perfect|great|okay|ok|sure|found it|i found it|based on the context)[!,.:]?\s*", "", t.strip(), flags=re.IGNORECASE)
     t = " ".join(t.split())
-    return " ".join(re.split(r"(?<=[.!?])\s+", t)[:2]).strip()
+    return re.split(r"(?<=[.!?])\s+", t)[0].strip()
+
+
+_OWN_ABSTAIN = re.compile(r"(i )?(don'?t|do not) have (that|this|any)|not in (the|my) context|pass (the|that|it|your) question on|"
+                         r"no information (about|on)", re.IGNORECASE)
 
 
 def is_abstention(text: str) -> bool:
-    """ABSTAIN, nothing, or narration with no answer (it reached the line once in testing)."""
-    return (not text) or text.upper().lstrip(" .\"'").startswith("ABSTAIN") or bool(_NARRATION.match(text))
+    """ABSTAIN, nothing, narration with no answer (reached the line once in testing), or the
+    model abstaining in its own words ("I don't have that information. I'll pass the question
+    on." with a 15k-token context): those must be passed on, not injected as an answer."""
+    t = text.strip()
+    return ((not t) or t.upper().lstrip(" .\"'").startswith("ABSTAIN") or bool(_NARRATION.match(t))
+            or bool(_OWN_ABSTAIN.search(t)))
 
 
 @dataclass

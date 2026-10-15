@@ -42,12 +42,15 @@ def test_no_lookups_means_plain_merged_turns():
 
 
 # ---- answerer -----------------------------------------------------------------------
-def test_spoken_strips_markdown_and_narration_and_keeps_two_sentences():
-    assert spoken("Perfect! **The disk** is 85% full. 11 GB free. Also more.") == "The disk is 85% full. 11 GB free."
+def test_spoken_strips_markdown_and_narration_and_keeps_one_sentence():
+    assert spoken("Perfect! **The disk** is 85% full. 11 GB free. Also more.") == "The disk is 85% full."
 
 
 @pytest.mark.parametrize("text,want", [("ABSTAIN", True), ("abstain.", True), ("", True),
                                        ("Let me look at what information I have.", True),
+                                       ("I don't have that information. I'll pass the question on.", True),
+                                       ("There is no information about a dentist appointment.", True),
+                                       ("You have 2 gigabytes free, and I don't have the swap figure.", False),  # a partial answer is an answer
                                        ("The build took 14 minutes.", False)])
 def test_abstention_detection(text, want):
     assert is_abstention(text) is want
