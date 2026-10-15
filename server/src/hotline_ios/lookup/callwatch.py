@@ -29,11 +29,14 @@ log = logging.getLogger(__name__)
 MODEL = "claude-haiku-4-5"
 DECIDE_SYSTEM = (
     "You watch a live phone call between Bogdan and his voice assistant. The assistant knows nothing about Bogdan's own "
-    "computers, servers, builds, tests, files, projects, accounts or calendar; Claude, an agent on his workstation, can look "
-    "those up. Each message is one thing speech recognition heard Bogdan say. Reply LOOKUP only if he clearly and completely "
-    "asks for that kind of information about HIS OWN things. Reply NONE for everything else, including greetings, small talk, "
-    "opinions, general knowledge, weather, prices, requests to repeat, goodbyes, and any fragment, half sentence, garbled or "
-    "unclear recognition (when in doubt, NONE). Reply with the single word only.")
+    "computers, servers, builds, tests, results, files, projects, accounts or calendar, and it has no clock: it does not "
+    "know the current time or date. Claude, an agent on his workstation, can look those up. Each message is one thing "
+    "speech recognition heard Bogdan say. Reply LOOKUP if he clearly asks for that kind of information about HIS OWN "
+    "things, or for the current time, date or day. Asking again for a specific figure or result (\"what was the score on X "
+    "again?\") is LOOKUP, and so is telling the assistant to ask or check with Claude. Reply NONE for everything else, "
+    "including greetings, small talk, opinions, general knowledge, weather, prices, a bare request to repeat what the "
+    "assistant just said (\"say that again\"), goodbyes, and any fragment, half sentence, garbled or unclear recognition "
+    "(when in doubt, NONE). Reply with the single word only.")
 
 
 @dataclass

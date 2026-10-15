@@ -46,10 +46,52 @@ def test_spoken_strips_markdown_and_narration_and_keeps_one_sentence():
     assert spoken("Perfect! **The disk** is 85% full. 11 GB free. Also more.") == "The disk is 85% full."
 
 
+# The 01:34 live answer. Only the post-strip text was logged; the line breaks the old strip
+# joined are restored here from its shape (headings ending ":" and "- " items).
+LIVE_0134 = """Based on the context provided for today's call (Friday 16 October 2026, early morning), here are the key results from today's duplex-lab tests:
+
+**PersonaPlex Fact Fidelity (96 test calls):**
+- 77 percent of facts exact over G.711, 69 percent over wideband
+- When the model delivered its brief, 83 percent of facts were exact
+- About 1 run in 9 never delivered the brief at all
+
+**Nemotron VoiceChat (then deleted):**
+- Cutting it freed 10.1 gigabytes on the Windows drive and 0.4 gigabytes on root
+"""
+
+
+@pytest.mark.parametrize("raw,want", [
+    (LIVE_0134, "77 percent of facts exact over G.711, 69 percent over wideband"),
+    # replayed with the 01:34 context tonight (2026-10-16 01:49)
+    ("Based on today's test results (as of Friday, October 16, 2026, early morning), here's a summary:\n\n"
+     "**PersonaPlex Fact Fidelity:** 77 percent exact on G.711, 69 percent on wideband, tested over 96 calls. When the "
+     "model actually delivered its brief, 83 percent of facts were exact.", "77 percent exact on G.711, 69 percent on wideband, tested over 96 calls."),
+    ("Based on the context provided, on G.711 PersonaPlex achieved 77 percent exact facts, 12 percent garbled, 11 percent omitted.",
+     "On G.711 PersonaPlex achieved 77 percent exact facts, 12 percent garbled, 11 percent omitted."),
+    ("Today's results, measured Friday 16 October 2026:\n\nPersonaPlex fact fidelity was 77 percent exact over G.711.",
+     "PersonaPlex fact fidelity was 77 percent exact over G.711."),
+    ("The disk is 2.5 GB free on /dev/nvme0n1p2. More text.", "The disk is 2.5 GB free on /dev/nvme0n1p2."),
+])
+def test_spoken_reduces_lists_and_preambles_to_one_short_sentence(raw, want):
+    out = spoken(raw)
+    assert out == want
+    assert len(out.split()) <= ans_mod.MAX_SPOKEN_WORDS and "\n" not in out
+
+
+def test_spoken_caps_a_run_on_sentence_at_a_clause_boundary():
+    out = spoken("The build ran 412 tests, 3 failed in the media layer, 2 were skipped because the GPU was busy, "
+                 "and the whole run took fourteen minutes on the workstation tonight")
+    assert out == "The build ran 412 tests, 3 failed in the media layer, 2 were skipped because the GPU was busy."
+    assert len(out.split()) <= ans_mod.MAX_SPOKEN_WORDS
+
+
 @pytest.mark.parametrize("text,want", [("ABSTAIN", True), ("abstain.", True), ("", True),
                                        ("Let me look at what information I have.", True),
                                        ("I don't have that information. I'll pass the question on.", True),
                                        ("There is no information about a dentist appointment.", True),
+                                       ("I don't have a tool to check the current time, and the context provided doesn't include that.", True),
+                                       ("I can't tell you the exact current time.", True),
+                                       ("I don't have a g.177 test result in the context.", True),
                                        ("You have 2 gigabytes free, and I don't have the swap figure.", False),  # a partial answer is an answer
                                        ("The build took 14 minutes.", False)])
 def test_abstention_detection(text, want):
