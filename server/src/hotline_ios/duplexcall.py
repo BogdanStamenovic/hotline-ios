@@ -30,8 +30,7 @@ from typing import Callable
 import numpy as np
 
 from .media.duplex import DuplexEngine
-from .media.pcm import ulaw_decode, ulaw_encode
-from .media.voicecall import FRAME_MS, FRAME_SAMPLES, SdpError, VoiceCall, parse_sdp_answer
+from .media.voicecall import FRAME_MS, SdpError, VoiceCall, parse_sdp_answer
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +78,7 @@ class DuplexCall:
         self.answered = False
         self.turns = 0
         self.stats: dict[str, object] = {}
+        self.codec = ""   # what the answer settled on; set when he picks up
         # The sentinel daemon._await_transcript waits on; anything else means done.
         self.ended = "not started"
         cmd = [os.environ.get("HOTLINE_IOS_DUPLEX_CMD", DEFAULT_CMD),
@@ -138,6 +138,9 @@ class DuplexCall:
             return
         self.answered = True
         call = VoiceCall(media_sock, answer, srtp_key, srtp_salt)
+        # 48 kHz when the phone took Opus, 8 kHz when it fell back to G.711.
+        self.engine.use_wire_rate(call.rate)
+        self.codec = call.codec.describe()
         call.record()
         try:
             self._converse(call)
@@ -164,7 +167,7 @@ class DuplexCall:
         self.answer_offset = len(pump.wire_out or [])
         tick = FRAME_MS / 1000.0
         next_tick = time.monotonic()
-        silence = bytes(FRAME_SAMPLES * 2)
+        silence = bytes(call.frame_samples * 2)
         n = 0
         while True:
             now = time.monotonic()
@@ -180,12 +183,12 @@ class DuplexCall:
                 for _ in range(backlog - 2):
                     pump.inbox.get_nowait()
             try:
-                frame = ulaw_decode(pump.inbox.get_nowait())
+                frame = pump.inbox.get_nowait()
             except Exception:  # queue.Empty
                 frame = silence
             self.engine.push(frame)
             if pump.queued() < OUT_QUEUE_FRAMES:
-                pump.enqueue([ulaw_encode(self.engine.pull(FRAME_SAMPLES))])
+                pump.enqueue([self.engine.pull(call.frame_samples)])
             n += 1
             if n % 25 == 0:
                 if self._gone():
@@ -203,6 +206,7 @@ class DuplexCall:
             "underruns": self.engine.underruns,
             "frame_ms": self.engine.stats[-1][1:] if self.engine.stats else None,
             "late_frames": pump.late_frames,
+            "codec": self.codec,
             "ended": self.ended,
         }
         log.info("duplex call ended (%s): %s", self.ended, self.stats)
@@ -221,19 +225,21 @@ class DuplexCall:
             wire_in, wire_out, at = pump.wire or [], pump.wire_out or [], pump.wire_at
             # Stereo on the outbound clock: L = him (placed at the frame index it
             # arrived on), R = what we sent. Exact to 20 ms; see MediaPump.wire_at.
+            # Both lists hold decoded PCM at the call's rate, one 20 ms frame each.
+            size = call.frame_samples
             n = len(wire_out)
-            left = np.zeros(n * FRAME_SAMPLES, dtype="<i2")
-            for payload, idx in zip(wire_in, at, strict=False):
+            left = np.zeros(n * size, dtype="<i2")
+            for frame, idx in zip(wire_in, at, strict=False):
                 if idx < n:
-                    pcm = np.frombuffer(ulaw_decode(payload), dtype="<i2")
-                    left[idx * FRAME_SAMPLES: idx * FRAME_SAMPLES + pcm.size] = pcm
-            right = np.frombuffer(ulaw_decode(b"".join(wire_out)), dtype="<i2")
+                    pcm = np.frombuffer(frame, dtype="<i2")
+                    left[idx * size: idx * size + pcm.size] = pcm
+            right = np.frombuffer(b"".join(wire_out), dtype="<i2")
             st = np.stack([left[: right.size], right[: left.size]], 1)
             path = self.record_dir / f"{stamp}-duplex.wav"
             with wave.open(str(path), "wb") as w:
                 w.setnchannels(2)
                 w.setsampwidth(2)
-                w.setframerate(8000)
+                w.setframerate(call.rate)
                 w.writeframes(st.astype("<i2").tobytes())
             import json
             (self.record_dir / f"{stamp}-duplex.json").write_text(json.dumps({
@@ -245,7 +251,7 @@ class DuplexCall:
             log.info("duplex call recorded to %s", path)
         except Exception:
             log.exception("could not save the duplex recording")
-        turns = self._transcribe(st)
+        turns = self._transcribe(st, call.rate)
         if not any(who == "you" for _, who, _ in turns):
             # place() blocks until a "you" entry arrives, so there must be one.
             turns.append((float("inf"), "you", "(nothing transcribed from his side)"))
@@ -264,7 +270,8 @@ class DuplexCall:
             self.ended = "done"
         log.info("%s", summary)
 
-    def _transcribe(self, stereo: np.ndarray | None) -> list[tuple[float, str, str]]:
+    def _transcribe(self, stereo: np.ndarray | None,
+                    rate: int = 8000) -> list[tuple[float, str, str]]:
         """Both sides of the recording, as time-ordered turns. After the model has
         exited, so Whisper gets the GPU PersonaPlex was holding.
 
@@ -290,7 +297,7 @@ class DuplexCall:
                 whisper = WhisperModel("small", device="cpu", compute_type="int8")
             turns: list[tuple[float, str, str]] = []
             for channel, who in ((0, "you"), (1, "claude")):
-                audio = soxr.resample(stereo[:, channel].astype(np.float32) / 32768.0, 8000, 16000)
+                audio = soxr.resample(stereo[:, channel].astype(np.float32) / 32768.0, rate, 16000)
                 segments, _ = whisper.transcribe(audio, language="en", beam_size=1, vad_filter=True,
                                                  condition_on_previous_text=False)
                 for seg in segments:

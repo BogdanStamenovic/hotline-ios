@@ -1,4 +1,8 @@
-"""Full-duplex bridge between an 8 kHz telephone leg and pp-stream (PersonaPlex, 24 kHz Mimi frames).
+"""Full-duplex bridge between a telephone leg and pp-stream (PersonaPlex, 24 kHz Mimi frames).
+
+The leg's rate is the negotiated codec's: 48 kHz on Opus, 8 kHz on G.711. On
+G.711 the model hears nothing above 4 kHz, which is what it misheard on the
+first test call; `use_wire_rate` is told which one this call got.
 
 No VAD, no turn gate: caller audio is pushed continuously and the model's audio is
 pulled continuously. pp-stream is lockstep (one 80 ms frame in, one out), so the
@@ -16,7 +20,7 @@ from collections import deque
 import numpy as np
 import soxr
 
-WIRE_RATE = 8_000
+WIRE_RATE = 8_000   # until use_wire_rate() says otherwise
 MODEL_RATE = 24_000
 FRAME_24K = 1920  # 80 ms
 
@@ -30,6 +34,7 @@ class DuplexEngine:
         self.stats: list[tuple[int, float, float]] = []
         self.ready = threading.Event()
         self.dead = threading.Event()
+        self.wire_rate = WIRE_RATE
         self._up = soxr.ResampleStream(WIRE_RATE, MODEL_RATE, 1, dtype="float32")
         self._down = soxr.ResampleStream(MODEL_RATE, WIRE_RATE, 1, dtype="float32")
         self._in24 = np.zeros(0, dtype=np.float32)
@@ -41,6 +46,23 @@ class DuplexEngine:
         self._primed = False
         self.prime = int(WIRE_RATE * 0.12)  # model frames arrive in 80 ms bursts; cover one plus compute jitter
         self.proc: subprocess.Popen | None = None
+
+    def use_wire_rate(self, rate: int) -> None:
+        """Set the telephone leg's rate once the call is answered.
+
+        The engine is built when the phone starts ringing, before the answer
+        says which codec won, so the resamplers are rebuilt here. Called before
+        the first push: pp-stream is lockstep, so nothing has come out yet.
+        """
+        if rate == self.wire_rate:
+            return
+        with self._lock:
+            self.wire_rate = rate
+            self._up = soxr.ResampleStream(rate, MODEL_RATE, 1, dtype="float32")
+            self._down = soxr.ResampleStream(MODEL_RATE, rate, 1, dtype="float32")
+            self.prime = int(rate * 0.12)
+            self._out8.clear()
+            self._out8_len = 0
 
     def start(self, timeout: float = 120.0) -> float:
         t0 = time.monotonic()
@@ -81,14 +103,14 @@ class DuplexEngine:
                     return
                 buf += chunk
             frame = np.frombuffer(buf, dtype="<f4")
-            out = self._down.resample_chunk(frame)
             with self._lock:
+                out = self._down.resample_chunk(frame)
                 self._out8.append(out)
                 self._out8_len += out.size
                 self.frames_out += 1
 
     def push(self, pcm16: bytes) -> None:
-        """Caller audio, 8 kHz mono LE int16, any chunk size."""
+        """Caller audio at `wire_rate`, mono LE int16, any chunk size."""
         if self.dead.is_set() or not self.proc or not self.proc.stdin:
             return
         x = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
@@ -102,7 +124,7 @@ class DuplexEngine:
                 return
 
     def pull(self, samples: int) -> bytes:
-        """Model audio, 8 kHz mono LE int16; zero-padded when the model is behind."""
+        """Model audio at `wire_rate`, mono LE int16; zero-padded when the model is behind."""
         got: list[np.ndarray] = []
         n = 0
         with self._lock:
