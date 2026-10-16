@@ -78,6 +78,22 @@ def test_spoken_reduces_lists_and_preambles_to_one_short_sentence(raw, want):
     assert len(out.split()) <= ans_mod.MAX_SPOKEN_WORDS and "\n" not in out
 
 
+@pytest.mark.parametrize("raw", ["I'll answer based on today's test results from the context.\n\nToday's main result: 77 percent exact on G.711.",
+                                 "I can answer this from today's results. 77 percent exact on G.711. More."])
+def test_spoken_skips_a_meta_preamble_sentence(raw):
+    assert "77 percent" in spoken(raw)
+
+
+def test_an_answer_that_later_says_something_is_missing_is_still_an_answer(monkeypatch):
+    reply = "PersonaPlex was 77 percent exact on G.711. The wideband retest is not in the context."
+    monkeypatch.setattr(ans_mod.claude_api, "client", lambda: types.SimpleNamespace(messages=types.SimpleNamespace(
+        create=lambda **kw: types.SimpleNamespace(stop_reason="end_turn", usage=types.SimpleNamespace(input_tokens=1, output_tokens=1),
+                                                  content=[types.SimpleNamespace(type="text", text=reply)]))))
+    monkeypatch.setattr(ans_mod.claude_api, "log_usage", lambda *a, **k: {})
+    a = Answerer("ctx", bash=False)
+    assert a.ask("results?") == ("PersonaPlex was 77 percent exact on G.711.", False)
+
+
 def test_spoken_caps_a_run_on_sentence_at_a_clause_boundary():
     out = spoken("The build ran 412 tests, 3 failed in the media layer, 2 were skipped because the GPU was busy, "
                  "and the whole run took fourteen minutes on the workstation tonight")

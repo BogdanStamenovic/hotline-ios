@@ -57,6 +57,9 @@ _PREAMBLE = re.compile(r"^(perfect|great|okay|ok|sure|found it|i found it)\b[!,.
                        r"^here(?:'s| is| are)\b[^,:]*[,:]\s*", re.IGNORECASE)
 
 
+_META = re.compile(r"^(i'?ll|i will|i can|let me|i'?m going to) (answer|tell|share|give|check|look)\b", re.IGNORECASE)
+
+
 def spoken(text: str) -> str:
     """One plain sentence of at most MAX_SPOKEN_WORDS words, no markdown, no preamble.
 
@@ -73,15 +76,19 @@ def spoken(text: str) -> str:
     for ln in lines:
         while (m := _PREAMBLE.match(ln)):
             ln = ln[m.end():]
-        if ln.rstrip().endswith(":") or not ln.strip():
-            continue                                  # a heading: "here's a summary:"
+        if ln.rstrip().endswith(":") or not ln.strip() or (_META.match(ln) and len(re.split(r"(?<=[.!?])\s+", ln.strip())) == 1):
+            continue                                  # a heading ("here's a summary:") or a lone "I'll answer from the context."
         t = ln
         break
     # "Today's results, measured Friday: 77 percent ..." -> the part after the label
     head, sep, rest = t.partition(": ")
     if sep and len(rest.split()) >= 4 and len(head.split()) <= 8:
         t = rest
-    t = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", " ".join(t.split()))[0].strip()
+    sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", " ".join(t.split()))
+    # "I'll answer based on today's results." / "I can answer this from the context." say nothing
+    while len(sentences) > 1 and _META.match(sentences[0]):
+        sentences.pop(0)
+    t = sentences[0].strip()
     words = t.split()
     if len(words) > MAX_SPOKEN_WORDS:
         cut = " ".join(words[:MAX_SPOKEN_WORDS])
@@ -170,10 +177,13 @@ class Answerer:
         except Exception:
             log.exception("answerer failed; abstaining")
             text = ""
-        if is_abstention(text):
+        # judged on what he would hear: a long reply that answers first and then says some other
+        # detail is "not in the context" is an answer, not an abstention (an e2e run lost the
+        # results question that way)
+        answer = spoken(text)
+        if is_abstention(answer):
             self.passed_on.append(question)
             return ABSTAIN_LINE, True
-        answer = spoken(text)
         if answer != text:
             log.info("answer reduced from %d to %d chars; raw: %r", len(text), len(answer), text[:600])
         self.answered.append((question, answer))
