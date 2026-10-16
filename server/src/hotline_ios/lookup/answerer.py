@@ -91,8 +91,8 @@ def spoken(text: str) -> str:
 
 
 _OWN_ABSTAIN = re.compile(r"^\W*(sorry,?\s*)?(i )?(don'?t|do not|can'?t|cannot|am unable to) (have|tell|check|see|access|find)\b|"
-                         r"not in (the|my) context|pass (the|that|it|your) question on|no information (about|on)",
-                         re.IGNORECASE)
+                         r"not in (the|my) context|pass (the|that|it|your) question on|no information (about|on)|"
+                         r"^\W*(i need to clarify|could you clarify|do you mean|which .{1,40}\?)", re.IGNORECASE)
 
 
 def is_abstention(text: str) -> bool:
@@ -100,8 +100,9 @@ def is_abstention(text: str) -> bool:
     model abstaining in its own words ("I don't have that information. I'll pass the question
     on." with a 15k-token context): those must be passed on, not injected as an answer."""
     t = text.strip()
+    # a question back ("I need to clarify what g.177 refers to", "Which test do you mean?") is not an answer
     return ((not t) or t.upper().lstrip(" .\"'").startswith("ABSTAIN") or bool(_NARRATION.match(t))
-            or bool(_OWN_ABSTAIN.search(t)))
+            or bool(_OWN_ABSTAIN.search(t)) or re.split(r"(?<=[.!?])\s+", t)[0].endswith("?"))
 
 
 @dataclass

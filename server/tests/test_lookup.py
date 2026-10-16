@@ -92,6 +92,9 @@ def test_spoken_caps_a_run_on_sentence_at_a_clause_boundary():
                                        ("I don't have a tool to check the current time, and the context provided doesn't include that.", True),
                                        ("I can't tell you the exact current time.", True),
                                        ("I don't have a g.177 test result in the context.", True),
+                                       ('I need to clarify what "g.177" refers to.', True),
+                                       ("A test score from the G.711 or wideband fidelity runs?", True),
+                                       ("77 percent on G.711. Want the wideband figure too?", False),
                                        ("You have 2 gigabytes free, and I don't have the swap figure.", False),  # a partial answer is an answer
                                        ("The build took 14 minutes.", False)])
 def test_abstention_detection(text, want):
