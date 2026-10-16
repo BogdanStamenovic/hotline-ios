@@ -1,0 +1,62 @@
+commit 3a9ef78b08da1a59f7bad0337eda40776ea26364
+run    38899118986
+frames 98
+
+MARK   4.380  went straight to the shell: launch argument configured the server
+MARK   8.160  cold auto-open fired: a channel is already open, backing out
+MARK  10.914  === drive begins ===
+MARK  10.915  scroll: three slow drags up
+MARK  22.870  scroll: two slow drags back down
+MARK  28.555  fling: fast flick up, let it decelerate
+MARK  32.124  fling: fast flick down, into the top rubber band
+MARK  35.635  swipe: drag a row left to rest the controls open
+MARK  38.635  swipe: close it again
+MARK  41.399  channel: tap a row
+MARK  50.113    tap 1: visible row data-1e, finished, Okay so y
+MARK  59.782    tap 1 opened nothing
+MARK  59.999    tap 2: visible row data-1e, finished, Okay so y
+MARK 104.933    channel opened on the SECOND tap -- the first was consumed closing a swiped row
+MARK 106.806    channel is open
+MARK 106.806  thread: slow scroll up
+MARK 119.640  thread: fling
+MARK 124.274  thread: pull past the top (74 pt arms 'load older')
+MARK 129.138  map: drag the ROUTE chip down to open
+MARK 131.074    found the route chip: Route. 3 phases.
+MARK 139.542  map: scrub the timeline
+MARK 148.380  map: scrub back
+MARK 178.280  map: drag the blind back up to close (grabber lives above y<90)
+MARK 189.866  back: interactive scrub from the left edge
+MARK 212.929  rest: re-open a channel so the final frame shows the newest rows
+MARK 426.749  === drive ends ===
+MARK   4.358  went straight to the shell: launch argument configured the server
+MARK   5.446  roster rendered
+
+VIEW map-close exists=true hittable=true
+VIEW map-close-worked routeGone=true chipBack=true
+VIEW chip-frame x=103 y=217 w=119 h=23 hittable=true enabled=true
+VIEW window (0.0, 0.0, 420.0, 912.0)
+VIEW controls view=true more=true delete-exists=false
+VIEW default sent=true tool=false prose=false
+VIEW default-chip Showing messages only. Tap for the full transcript.
+VIEW full sent=true tool=true prose=true
+VIEW full-chip Showing the full transcript. Tap for messages only.
+VIEW toggled=true
+PROSE chars=657 newlines=4 endsWithTail=true ellipsis=false
+
+-- the chip in the tree --
+    t =    63.83s Waiting 4.0s for "route-chip" Button to exist
+    t =    64.85s     Checking `Expect predicate `existsNoRetry == 1` for object "route-chip" Button`
+    t =    64.86s         Checking existence of `"route-chip" Button`
+    t =    68.11s     Checking existence of `"route-chip" Button`
+    t =   114.72s Waiting 4.0s for "route-chip" Button to exist
+    t =   115.78s     Checking `Expect predicate `existsNoRetry == 1` for object "route-chip" Button`
+    t =   115.78s         Checking existence of `"route-chip" Button`
+    t =   140.10s Checking existence of `"route-chip" Button`
+    t =   140.56s Checking existence of `"route-chip" Button`
+    t =   141.75s Find the "route-chip" Button
+
+-- build errors, if any --
+(none)
+
+-- test failures, if any --
+(none)
