@@ -122,6 +122,7 @@ server/src/hotline_ios/
   ring/loopback.py  no phone at all; what the tests run against
   media/rtp.py      RTP + G.711 + a jitter buffer sized for the real path
   media/pcm.py      format conversion, and G.711 as a lookup table
+  media/codec.py    Opus (preferred) and G.711, and the SDP offer/answer between them
   call.py           one call, independent of how it rang
   daemon.py         hotline-iosd
   call_cli.py       hotline-call
