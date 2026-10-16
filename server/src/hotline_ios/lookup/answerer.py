@@ -57,7 +57,8 @@ _PREAMBLE = re.compile(r"^(perfect|great|okay|ok|sure|found it|i found it)\b[!,.
                        r"^here(?:'s| is| are)\b[^,:]*[,:]\s*", re.IGNORECASE)
 
 
-_META = re.compile(r"^(i'?ll|i will|i can|let me|i'?m going to) (answer|tell|share|give|check|look)\b", re.IGNORECASE)
+_META = re.compile(r"^(i'?ll|i will|i can|let me|i need to|i'?m going to|i have to) (answer|tell|share|give|check|look|provide|search|"
+                   r"find|pull|get|see|review|go through)\b", re.IGNORECASE)
 
 
 def spoken(text: str) -> str:
@@ -108,7 +109,8 @@ def is_abstention(text: str) -> bool:
     on." with a 15k-token context): those must be passed on, not injected as an answer."""
     t = text.strip()
     # a question back ("I need to clarify what g.177 refers to", "Which test do you mean?") is not an answer
-    return ((not t) or t.upper().lstrip(" .\"'").startswith("ABSTAIN") or bool(_NARRATION.match(t))
+    # ... and a reply that only says what it is about to do ("I'll provide you with the results ...")
+    return ((not t) or t.upper().lstrip(" .\"'").startswith("ABSTAIN") or bool(_NARRATION.match(t)) or bool(_META.match(t))
             or bool(_OWN_ABSTAIN.search(t)) or re.split(r"(?<=[.!?])\s+", t)[0].endswith("?"))
 
 
