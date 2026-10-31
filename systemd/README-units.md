@@ -1,53 +1,29 @@
-# The units in this directory, and how they relate to the live ones
+# The unit, and how it relates to the live one
 
-`hotline-iosd.service` here is **not** what runs. The live unit is
-`~/.config/systemd/user/hotline-ios.service` — different name, different
-content — and the two have drifted:
+`hotline-ios.service.in` is the template `ownbox.sh setup` renders into
+`~/.config/systemd/user/hotline-ios.service`. A rendered unit starts with the
+line `# Rendered by hotline-ios ownbox.sh`; `setup` and `update` rewrite only a
+unit that carries it.
 
-| | tracked `hotline-iosd.service` | live `hotline-ios.service` |
+**On archserver the live unit is hand-written** and predates the template. It
+has been restarted, rung and debugged, so `setup` leaves it alone and says so.
+To hand it over to the template: compare the two, delete the live one, run
+`./ownbox.sh setup`.
+
+What changed on 2026-10-31, when phone calls moved to hotline-call:
+
+| | before | after |
 |---|---|---|
-| ring transports | `telegram,sip` | `sip` |
-| `.env` | `EnvironmentFile=` | loaded by `daemon.py` at startup |
-| `KillMode=process` | present, commented "not optional" | **absent** |
-| `StartLimitIntervalSec=0` | absent | present |
+| `HOTLINE_IOS_RING=` | `sip` | gone: hotline-iosd rings nothing |
+| `wait-for-cvoiced` drop-in | gated the start on cvoiced | gone with the voice; it lives in hotline-call's `hotline-calld` unit now |
+| SIP_* in `.env` | read at startup | read by hotline-calld from `~/.config/hotline-call/env` |
 
-Believe the live one. It is what has been restarted, rung and debugged. The
-`KillMode=process` note warns that restarting this unit could take the tmux
-server — and every live Claude session — down with it; two restarts on
+The old tracked `hotline-iosd.service` was deleted: it had drifted from the live
+unit (`telegram,sip`, `KillMode=process`, no `StartLimitIntervalSec=0`) and
+nothing ran it.
+
+`KillMode=process` is not in the template. The note that came with it warned
+that restarting the unit could take the tmux server -- and every live Claude
+session -- down with it; two restarts of the live unit, which lacks it, on
 2026-09-10 did no such thing, so either the hazard is gone or it never applied
-to this unit. Nobody has reconciled the two files, and this note exists so the
-next reader does not edit the one that is not running.
-
-## `wait-for-cvoiced` and the drop-in
-
-`hotline-ios.service` starts one second **before** `cvoiced.service` on a cold
-boot (measured 15:03:57 vs 15:03:58, 2026-09-10), and cvoiced then spends ~30 s
-loading its model. `build_voice()` health-probes cvoiced exactly once, at
-construction; the probe fails, `speaker` stays `None`, `can_talk` is False for
-the life of the process, and the phone **rings him and cannot talk**. `/health`
-reports it (`answered calls carry no audio`) and nothing retries.
-
-The drop-in gates the start on `wait-for-cvoiced`, which polls
-`http://100.72.2.62:8760/status` for `model_loaded:true`. Two deliberate
-choices:
-
-- **The wait is bounded (90 s) and the script always exits 0.** A hard
-  `Requires=`/`After=` on cvoiced would mean *no doorbell at all* whenever TTS
-  is broken. A silent doorbell is strictly worse than a mute one — the same
-  reasoning as the live unit's `Restart=always` comment.
-- **It probes the tailnet address, not loopback.** `ss -lntp` shows cvoiced
-  listening on `100.72.2.62:8760` only, and that is the base URL `Voice()`
-  itself uses. A loopback probe reports "not ready" against a healthy cvoiced.
-
-Install:
-
-    install -m755 systemd/wait-for-cvoiced ~/.claude/bin/wait-for-cvoiced
-    mkdir -p ~/.config/systemd/user/hotline-ios.service.d
-    cp systemd/hotline-ios.service.d/wait-for-cvoiced.conf ~/.config/systemd/user/hotline-ios.service.d/
-    systemctl --user daemon-reload && systemctl --user restart hotline-ios
-
-**What is verified and what is not.** Ready case returns in 0 s; a dead port
-exits 0 after its budget without blocking the start; a restart through the gate
-gives `ExecStartPre status=0` and `degradations: []`. The **actual cold boot** —
-tailscale still coming up, cvoiced mid-load — has not been exercised. It needs a
-reboot, or it verifies itself at the next scheduled 08:00 wake.
+to this unit.

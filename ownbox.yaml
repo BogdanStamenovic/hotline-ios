@@ -1,0 +1,16 @@
+schema: 1
+name: hotline-ios
+description: The hotline iPhone app's server (hotline-iosd) — agent roster, channels, history, controls and delegation for the iOS app. Phone calls are hotline-call's.
+homepage: https://github.com/BogdanStamenovic/hotline-ios
+tags: [ios, iphone, claude, agents, delegation, python, systemd]
+install:
+  platforms: [linux]
+  setup:
+    linux: [./ownbox.sh setup]
+  update:
+    linux: [./ownbox.sh update]
+  remove:
+    linux: [./ownbox.sh remove]
+commands:
+  hotline-iosd:
+    linux: ./ownbox.sh status

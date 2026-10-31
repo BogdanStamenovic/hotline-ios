@@ -5,28 +5,26 @@ build-backend = "hatchling.build"
 [project]
 name = "hotline-ios"
 version = "0.1.0"
-description = "Real ringing calls from a Claude Code session to an iPhone"
-readme = "../README.md"
-# Matches hotline's floor for the same reasons -- this process imports hotline's
-# audio stack in-process, so it has to live in the same interpreter it does.
+description = "The server the hotline iPhone app talks to: agent roster, channels, control and delegation"
+# No `readme`: the README is the repository's, one level up, and hatchling
+# refuses a readme outside the project directory -- which is why an editable
+# install of this package used to fail and hotline-call's shim carried a
+# module-form fallback.
+# Matches hotline's floor: this process imports hotline's registry, router and
+# HTTP server in-process.
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "Bogdan Stamenovic" }]
 dependencies = []
 
 [project.optional-dependencies]
-# The ring transports. Each is optional so that a box only needs the deps for
-# the outcome it is actually running -- see docs/ARCHITECTURE.md.
-# The doorbell he chose. A user account, not a bot: MTProto's phone.requestCall
-# is user-only, so a bot token cannot place a call.
-telegram = ["telethon>=1.44"]
-# Carrying audio on an answered call. numpy and faster-whisper are what the
-# media stack and the transcriber need; soxr is not optional in practice --
-# `pcm.resample` falls back to linear interpolation without it, which downsamples
-# 24 kHz speech to 8 kHz with no anti-aliasing and folds the noise straight into
-# the band Whisper listens to. The TTS is cvoiced over HTTP and needs nothing.
-# websockets: cvoiced's /speak/ws, for the streamed (`--engine haiku`) voice.
-voice = ["numpy>=2", "soxr>=0.5", "faster-whisper>=1.1", "websockets>=12"]
+# Phone calls -- the ring, the voice, Whisper, Telegram -- moved to hotline-call
+# on 2026-10-31, and their dependencies went with them.
+#
+# What hotline itself needs to be imported over PYTHONPATH: its package
+# __init__ pulls in phoneauth, which imports nacl, and hotline's own pyproject
+# does not declare it.
+hotline = ["pynacl>=1.5"]
 dev = [
   "pytest>=8.0,<10",
   "pytest-asyncio>=0.23,<2",
@@ -35,7 +33,6 @@ dev = [
 ]
 
 [project.scripts]
-hotline-call = "hotline_ios.call_cli:main"
 hotline-iosd = "hotline_ios.daemon:main"
 hotline-ios-hooks = "hotline_ios.hooks:main"
 
@@ -49,14 +46,6 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 
-# The measurement scripts are held to a different bar than the daemon, on
-# purpose. `dict(...)` reads better than a literal when the thing being built is
-# a row of results, `open()` without a context manager is fine for a script that
-# exits straight after, and a bare `except Exception` around a model load IS the
-# behaviour wanted: one model that will not fit in VRAM must not end the sweep.
-[tool.ruff.lint.per-file-ignores]
-"bench/*.py" = ["BLE001", "C408", "SIM115", "I001"]
-
 [tool.mypy]
 python_version = "3.12"
 warn_unused_ignores = true
@@ -68,24 +57,4 @@ warn_redundant_casts = true
 # for faster-whisper and piper.
 [[tool.mypy.overrides]]
 module = ["hotline.*"]
-ignore_missing_imports = true
-
-# faster-whisper ships no type information; `Ears.transcribe` narrows every
-# segment to its stripped `.text` on the line after the call. Same override
-# hotline carries for the same package.
-[[tool.mypy.overrides]]
-module = ["faster_whisper"]
-ignore_missing_imports = true
-
-# soxr ships no type information. `pcm.resample` narrows its result to a float32
-# ndarray on the line after the call, which is the whole of the surface.
-[[tool.mypy.overrides]]
-module = ["soxr"]
-ignore_missing_imports = true
-
-# telethon ships no type information. Everything it returns is immediately
-# narrowed to a call id or an exception here, so there is nothing to check
-# across the boundary -- same reasoning as hotline's overrides for faster-whisper.
-[[tool.mypy.overrides]]
-module = ["telethon.*"]
 ignore_missing_imports = true
