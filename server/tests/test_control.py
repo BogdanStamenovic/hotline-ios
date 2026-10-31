@@ -34,7 +34,6 @@ from hotline.errors import HotlineError
 
 from hotline_ios import vitals
 from hotline_ios.daemon import STOP_DEBOUNCE, Service, build_server
-from hotline_ios.ring.loopback import LoopbackTransport
 
 
 class Reply:
@@ -149,7 +148,7 @@ def box(monkeypatch):
 
 
 def service_for(box):
-    return Service(LoopbackTransport(), FakePool())
+    return Service(FakePool())
 
 
 def controls(service, agent):

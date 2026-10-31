@@ -36,7 +36,6 @@ import hotline.ccsocks
 
 from hotline_ios import hooks, ingest
 from hotline_ios.daemon import Service, build_server
-from hotline_ios.ring.loopback import LoopbackTransport
 from hotline_ios.store import Store
 
 SID = "sess-map-1"
@@ -190,7 +189,7 @@ async def test_a_turn_becomes_a_phase_with_its_tools_under_it(claude_home, doubl
         calls("Edit", {"file_path": "/srv/payments/charge.py", "old_string": "a"}),
         says("Fixed it -- the mock clock was a second behind."),
     ])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
 
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "Stop"})
 
@@ -226,7 +225,7 @@ async def test_the_title_is_frozen_at_open_and_never_rewritten(claude_home, doub
         "whether the toolchain bump is responsible"
     )
     write(claude_home, SID, [prompt(long_prompt), calls("Bash", {"command": "git log"})])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "PreToolUse"})
     opened = service.store.phases(name)[0]
     assert 60 <= len(opened["title"]) <= 81
@@ -247,7 +246,7 @@ async def test_a_second_prompt_closes_the_first_phase_and_opens_another(claude_h
         prompt("first job"), calls("Read", {"file_path": "/a"}), says("first done"),
         prompt("second job"), calls("Read", {"file_path": "/b"}),
     ])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "PreToolUse"})
 
     phases = sorted(service.store.phases(name), key=lambda p: p["started_at"])
@@ -268,7 +267,7 @@ async def test_a_subagents_tools_nest_under_the_parent_phase(claude_home, double
     write(claude_home, SID, [calls("Grep", {"pattern": "TODO"}, sidechain=True)],
           subagent="agent-aaa")
     write(claude_home, SID, [says("found three")])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "Stop"})
 
     phases = service.store.phases(name)
@@ -294,7 +293,7 @@ async def test_a_subagents_tools_still_nest_when_they_arrive_after_the_phase_clo
     name = declared(doubles)
     write(claude_home, SID, [prompt("delegate it"), calls("Agent", {"description": "look"})])
     write(claude_home, SID, [says("delegated; it is still running")])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "Stop"})
     phase = service.store.phases(name)[0]
     assert phase["ended_at"] is not None
@@ -323,7 +322,7 @@ async def test_a_subagents_own_prompt_and_prose_are_not_the_parents(claude_home,
                      "content": [{"type": "text", "text": "subagent chatter"}]}},
     ], subagent="agent-bbb")
     write(claude_home, SID, [says("the real answer")])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "Stop"})
 
     phases = service.store.phases(name)
@@ -336,7 +335,7 @@ async def test_a_compaction_lands_with_its_real_numbers(claude_home, doubles):
     the CLI itself, so the row says what it actually did."""
     name = declared(doubles)
     write(claude_home, SID, [prompt("keep going"), compacted(48027, 4070, 71104)])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "Stop"})
 
     row = next(e for e in service.store.since(name, 0) if e.kind == "compact")
@@ -351,7 +350,7 @@ async def test_records_the_cli_wrote_for_the_user_do_not_open_phases(claude_home
         prompt("Base directory for this skill: /home/bodas/.claude/skills/x"),
         prompt("what he actually typed"),
     ])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "UserPromptSubmit"})
     assert [p["title"] for p in service.store.phases(name)] == ["what he actually typed"]
 
@@ -362,7 +361,7 @@ async def test_records_the_cli_wrote_for_the_user_do_not_open_phases(claude_home
 async def test_a_second_nudge_reads_only_what_is_new(claude_home, doubles):
     name = declared(doubles)
     write(claude_home, SID, [prompt("go"), calls("Bash", {"command": "one"})])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     first = await service.hook({"session_id": SID, "cwd": "/tmp", "event": "PreToolUse"})
     assert first["events"] == 2
     offset, _ = service.store.read_position(name)
@@ -382,7 +381,7 @@ async def test_concurrent_nudges_do_not_write_the_same_event_twice(claude_home, 
     from the same stored offset without the per-agent lock."""
     name = declared(doubles)
     write(claude_home, SID, [prompt("go"), calls("Bash", {"command": "one"}), says("done")])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     await asyncio.gather(*[
         service.hook({"session_id": SID, "cwd": "/tmp", "event": "PreToolUse"})
         for _ in range(6)
@@ -397,7 +396,7 @@ async def test_a_tool_call_is_the_only_thing_that_sets_last_tool_at(claude_home,
     rather than from the session's own word for itself."""
     name = declared(doubles)
     write(claude_home, SID, [prompt("go")])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "UserPromptSubmit"})
     assert service.store.agent(name)["last_tool_at"] is None
 
@@ -414,7 +413,7 @@ async def test_an_unreadable_transcript_holds_the_offset_and_says_so(claude_home
     that produces nothing recognisable must be retried loudly, not skipped."""
     name = declared(doubles)
     write(claude_home, SID, [prompt("go"), calls("Bash", {"command": "one"})])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "PreToolUse"})
     good_offset, _ = service.store.read_position(name)
 
@@ -439,7 +438,7 @@ async def test_an_unreadable_transcript_holds_the_offset_and_says_so(claude_home
 
 async def test_an_unattributable_nudge_is_dropped_loudly_not_filed_under_a_guess(claude_home):
     """§2. Never file into a phantom bucket."""
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     answer = await service.hook({"session_id": "belongs-to-nobody", "cwd": "/tmp",
                                  "event": "Stop"})
     assert answer["ok"] is False
@@ -451,7 +450,7 @@ async def test_an_unattributable_nudge_is_dropped_loudly_not_filed_under_a_guess
 async def test_health_reports_the_hook_counters(claude_home, doubles):
     declared(doubles)
     write(claude_home, SID, [prompt("go")])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     service.ring_ready = True
     port = free_port()
     server = build_server(service, "127.0.0.1", port)
@@ -476,7 +475,7 @@ async def test_the_hook_endpoint_files_a_phase_end_to_end(claude_home, doubles):
     write(claude_home, SID, [
         prompt("ship the release"), calls("Bash", {"command": "make release"}), says("shipped"),
     ])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     port = free_port()
     server = build_server(service, "127.0.0.1", port)
     await server.start()
@@ -502,7 +501,7 @@ async def test_the_safety_poll_catches_a_session_that_never_nudged(claude_home, 
     while the daemon was restarting."""
     name = declared(doubles)
     write(claude_home, SID, [prompt("nobody nudged for this"), calls("Read", {"file_path": "/x"})])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     assert service.hook_events == 0
 
     swept = await service.poll_once()
@@ -516,7 +515,7 @@ async def test_the_safety_poll_catches_a_session_that_never_nudged(claude_home, 
 async def test_the_poll_ignores_sessions_that_map_to_no_agent(claude_home, doubles):
     doubles["sessions"] = [Session("stranger")]
     doubles["records"] = []
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     # A live session with no registry record still resolves, to the same derived
     # name the roster already lists it under -- that is not a phantom bucket.
     assert service.agent_for_session("stranger") == "stranger"
@@ -526,7 +525,7 @@ async def test_the_poll_ignores_sessions_that_map_to_no_agent(claude_home, doubl
 async def test_the_feed_wakes_when_the_hook_files_something(claude_home, doubles):
     name = declared(doubles)
     write(claude_home, SID, [prompt("go")])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "UserPromptSubmit"})
     cursor = service.store.latest_seq()
 
@@ -547,7 +546,7 @@ async def test_a_context_sample_is_stored_and_a_null_one_is_not(claude_home, dou
     """§9.7: `used_percentage` is null before a session's first turn. Storing
     that as zero would draw a full gauge for a session whose usage is unknown."""
     name = declared(doubles)
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
 
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "StatusLine",
                         "context_used_percentage": None})
@@ -772,7 +771,7 @@ async def test_a_position_past_the_end_of_the_transcript_restarts_the_read(
         prompt("Fix the thing"),
         calls("Bash", {"command": "ls"}),
     ])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     service.store.set_read_position(name, 10_000_000, {}, SID)
 
     result = await service.ingest_session(name, SID)
@@ -812,7 +811,7 @@ async def test_the_prose_reaches_the_phone_whole_and_not_as_a_caption(claude_hom
         calls("Bash", {"command": "pytest -q tests/test_payments.py"}),
         says(long),
     ])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "Stop"})
 
     events = service.store.since(name, 0)
@@ -849,7 +848,7 @@ async def test_a_replayed_slice_does_not_post_the_prose_twice(claude_home, doubl
         calls("Bash", {"command": "pytest -q"}),
         says(long),
     ])
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
 
     await service.hook({"session_id": SID, "cwd": "/tmp", "event": "Stop"})
     first = [e.text for e in service.store.since(name, 0) if e.kind == "claude"]
@@ -875,7 +874,7 @@ async def test_a_deliberate_send_is_stored_apart_from_transcript_prose(claude_ho
     kind.
     """
     name = declared(doubles)
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
 
     answer = service.sent(name, "Deploy is done. Nothing needs you.")
     assert answer["ok"] and answer["seq"] > 0

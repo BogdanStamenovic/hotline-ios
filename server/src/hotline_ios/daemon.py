@@ -1,18 +1,15 @@
-"""`hotline-iosd` -- the service a Claude session calls to ring Bogdan's phone.
+"""`hotline-iosd` -- the server the iPhone app talks to.
 
-Runs beside `hotlined` rather than inside it. Three reasons, in order of how
-much they matter:
+The roster of agents, their channels and history, the controls (stop, retask,
+compact, resume, new), delegation (`say`), the transcript map fed by the hook,
+and the conversations a ring opens. It does not ring anybody any more: since
+2026-10-31 phone calls are `hotline-calld`'s (the hotline-call repository), and
+everything this daemon still does about a call goes through `calld.py`.
 
-1. **`hotlined` must keep working when this does not.** It carries the Discord
-   bridge and the iPhone Shortcut path, which are the fallbacks this thing
-   degrades to. Putting the experimental ringer in the same process as its own
-   safety net is how you lose both at once.
-2. **Model instances must not be shared.** hotline's `Transcriber`/`Speaker`
-   `load()`/`unload()` are not reference-counted, so a Discord call hanging up
-   would unload the model out from under a live phone call. `bot.py` already
-   gives each call its own; this follows that, and pays ~1.5 GB of VRAM for it.
-3. `HotlineBot.call` is a single-slot attribute and refuses a second join. A
-   separate process sidesteps that entirely rather than reworking it.
+Runs beside `hotlined` rather than inside it, because `hotlined` carries the
+Discord bridge and the iPhone Shortcut path -- the fallbacks -- and putting the
+experimental thing in the same process as its own safety net is how you lose
+both at once.
 
 It reuses hotline's `httpd.Server` -- roughly a hundred lines Bogdan has already
 read -- rather than adding a web framework, and gates on the same source-IP
@@ -23,12 +20,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import logging
 import os
 import pathlib
+import re
 import sys
-import threading
 import time
 import uuid
 from collections.abc import Sequence
@@ -45,18 +41,19 @@ from .endpoint import (
 )
 from .events import Entry, EventLog, Waker
 from .ingest import Ingested
-from .ring.base import (
-    CallDeclined,
-    CallError,
-    CallTarget,
-    CallUnanswered,
-    CallUnreachable,
-)
 from .store import UNATTRIBUTED, Store
 
 log = logging.getLogger("hotline-iosd")
 
 MAX_WAIT = 30.0
+
+CONVERSATION_ID = re.compile(r"[0-9a-f]{6,32}")
+"""What hotline-calld mints (`uuid4().hex[:12]`), with room either side."""
+
+CALL_KINDS = ("claude", "summary", "you", "state", "error")
+"""Event kinds a call writes: the question, the brief, his words and the
+voice's, how it ended, and what went wrong. Nothing else -- `tool` and `sent`
+rows mean things a call never says."""
 TURN_TIMEOUT = 900.0
 """Ceiling on a long-poll. Under most proxy and NAT idle timeouts."""
 
@@ -171,53 +168,19 @@ nearly all of them."""
 class Service:
     def __init__(
         self,
-        transport: Any,
         pool: Any,
         *,
-        transcriber: Any = None,
-        speaker: Any = None,
         allow_ips: set[str] | None = None,
         api_key: str = "",
-        page_fallback: Any = None,
-        segmenter_factory: Any = None,
-        fillers: Any = None,
         store: Store | None = None,
-        default_engine: str = "",
-        gpu_handoff: Any = None,
-        gpu_wait_s: float = 180.0,
+        calld: Any = None,
     ) -> None:
-        self.transport = transport
-        # Who talks on a call to HIM when the caller does not say: "" is the Serbian
-        # ASR + Claude + TTS loop, "personaplex" the English duplex model. A call to
-        # any other SIP address (a registry guest, in Serbian) never takes this default.
-        # Empty here so a Service built in a test never touches the GPU or cvoiced;
-        # main() sets it from HOTLINE_IOS_DEFAULT_ENGINE.
-        self.default_engine = default_engine
-        # () -> gpu_handoff.GpuHandoff, or None to leave ollama and cvoiced alone
-        self.gpu_handoff = gpu_handoff
-        # Held by a PersonaPlex call from handing the GPU over to handing it back.
-        # Any call placed meanwhile waits for it: a second PersonaPlex would not fit
-        # on the card, and a classic call would have no voice while cvoiced is down.
-        # Classic calls only wait; they do not hold it, so they still overlap freely.
-        self._gpu_lock = asyncio.Lock()
-        self.gpu_wait_s = gpu_wait_s
         self.pool = pool
-        self.transcriber = transcriber
-        self.speaker = speaker
-        # How many calls currently want the models up. Not a bool: two agents
-        # can ring him in the same minute, and the first to hang up must not
-        # unload `large-v3` out from under the second one mid-sentence.
-        self._calls_holding_models = 0
-        self._models_lock = threading.Lock()
+        # `calld.CallDaemon`: hotline-calld, which owns phone calls. None in a
+        # test that never touches a call; /health then says calls are not wired.
+        self.calld = calld
         self.allow_ips = allow_ips or set()
         self.api_key = api_key
-        self.page_fallback = page_fallback
-        # Injectable so a test can be deterministic, and so a transport with an
-        # unusual rate can tune the VAD. None means hotline's Segmenter.
-        self.segmenter_factory = segmenter_factory
-        # Pre-rendered Serbian holding phrases. None is a working call with more
-        # dead air in it, never a broken one -- see `media/tts.py:Fillers`.
-        self.fillers = fillers
         # The in-memory INDEX over persisted rows, not the record itself. The
         # store is the record. This holds the conversations that are warm --
         # recent or still open -- because that is what `EventLog`'s long-poll
@@ -232,20 +195,9 @@ class Service:
         # conversation -> the agent it belongs to, so an append does not have to
         # go back to the database to find out where to file itself.
         self.call_agent: dict[str, str] = {}
-        # name -> transport, so a caller's --transport can be honoured or
-        # refused rather than silently ignored. Populated by set_links(); a
-        # Service built directly in a test just has the one default.
-        self.links: dict[str, Any] = {}
-        # Live sessions, so the phone can end a call from its own UI rather
-        # than only by the far end hanging up.
+        # Delegation turns in flight, so the phone can dismiss one from its own UI.
         self.sessions: dict[str, Any] = {}
         self.started = time.time()
-        # False until the doorbell's start() has succeeded. A transport that
-        # could not start cannot ring, and /health reporting ok:true in that
-        # state is the same lie as reporting ok:true on a loopback -- it was
-        # doing exactly that with "sip is not configured" sitting in
-        # degradations right beside it.
-        self.ring_ready = False
         self.degradations: list[str] = []
         # Hook accounting, all reported on /health. Counters rather than a
         # boolean because "the map is empty" and "the map is empty and 4000
@@ -292,10 +244,6 @@ class Service:
         self._last_stop_at: dict[str, float] = {}
         # Assistant output samples, in memory on purpose -- see `vitals.py`.
         self.rates = vitals.Rates()
-        # The running loop, for `inbound_call` on the SIP thread. Set in main().
-        self.loop: asyncio.AbstractEventLoop | None = None
-        # `ring.inbound.SipInbound` when he can call us, else None.
-        self.inbound: Any = None
         self._hydrate()
 
     # ---- where this daemon can be reached --------------------------------
@@ -502,11 +450,7 @@ class Service:
             if supplied != self.api_key:
                 raise HttpError(401, "bad or missing X-Hotline-Key")
 
-    # ---- ringing him ------------------------------------------------------
-
-    def set_links(self, links: dict[str, Any]) -> None:
-        """Register the individually-addressable doorbells."""
-        self.links = dict(links)
+    # ---- conversations: rings and delegations -----------------------------
 
     def open_calls(self) -> int:
         """Conversations still awaiting an answer.
@@ -544,15 +488,19 @@ class Service:
             self.call_agent.pop(call_id, None)
         return len(stale)
 
-    def _open_conversation(self, agent: str | None, kind: str) -> tuple[str, EventLog]:
+    def _open_conversation(self, agent: str | None, kind: str,
+                           conversation: str | None = None) -> tuple[str, EventLog]:
         """Mint a conversation, persist it, and index it. One place, two callers.
 
         `kind` is `"ring"` or `"say"` and it is what decides whether the agent
         counts as blocked on him: a ring is an agent waiting for an answer, a
         `say` is him giving one an instruction. Getting that backwards would put
         a blocked pin on every agent he ever talked to.
+
+        `conversation` is given when hotline-calld opens a call here: it mints
+        the id itself, so the call has one name on both sides.
         """
-        conversation = uuid.uuid4().hex[:12]
+        conversation = conversation or uuid.uuid4().hex[:12]
         name = self.resolve_agent(agent)
         opened = time.time()
         events = EventLog()
@@ -590,658 +538,82 @@ class Service:
         except Exception:
             log.exception("could not close conversation %s in the store", conversation)
 
-    def _resolve_transport(self, requested: str) -> Any:
-        """Pick the doorbell for one call, or refuse.
+    # ---- what hotline-calld writes here ------------------------------------
+    #
+    # A ring is a conversation in this store: the app lists the question before
+    # the phone rings and he can answer it by typing. hotline-calld owns the
+    # call and writes its lines here; see `calld.py` for the other direction.
 
-        `--transport sip` used to reach the request body and go no further --
-        `place()` read `self.transport` unconditionally. A flag that silently
-        does nothing is worse than no flag at all, because it is reached for
-        exactly when the configured doorbell is already suspect. Now it either
-        works or it is a 400.
-        """
-        requested = (requested or "").strip().lower()
-        if not requested or requested == "auto":
-            return self.transport
-        if requested in self.links:
-            return self.links[requested]
+    def call_open(self, conversation: str, agent: str | None, kind: str) -> dict[str, Any]:
         from hotline.httpd import HttpError
 
-        known = ", ".join(sorted(self.links)) or "none"
-        raise HttpError(400, f"unknown transport {requested!r}; this daemon has: {known}")
+        if not CONVERSATION_ID.fullmatch(conversation):
+            raise HttpError(400, "conversation must be 6-32 lowercase hex characters")
+        if kind not in ("ring", "say"):
+            raise HttpError(400, "kind is 'ring' or 'say'")
+        if self._channel(conversation) is not None:
+            # A retry after a timeout. Idempotent, so the mirror can resend.
+            return {"conversation": conversation,
+                    "agent": self.call_agent.get(conversation, UNATTRIBUTED), "existed": True}
+        _, _events = self._open_conversation(agent, kind, conversation)
+        return {"conversation": conversation, "agent": self.call_agent[conversation],
+                "existed": False}
 
-    # ---- giving an answered ring a voice ---------------------------------
+    def call_append(self, conversation: str, kind: str, text: str) -> dict[str, Any]:
+        from hotline.httpd import HttpError
 
-    def _warm_models(self) -> None:
-        """Load what an answered call needs, in the background, once.
+        if kind not in CALL_KINDS:
+            raise HttpError(400, f"kind must be one of {', '.join(CALL_KINDS)}")
+        if self._channel(conversation) is None:
+            raise HttpError(404, f"no conversation {conversation}")
+        entry = self._append(conversation, kind, text)
+        return {"conversation": conversation, "seq": entry.seq}
 
-        Called as the phone starts ringing rather than at startup. His rule,
-        2026-09-11: nothing is loaded until a call needs it, and everything is
-        dropped when the call ends.
+    def call_close(self, conversation: str) -> dict[str, Any]:
+        from hotline.httpd import HttpError
 
-        **Why this runs beside the ring instead of before it.** His words were
-        "everything needed gets loaded and then the call made", and taken
-        literally that delays the INVITE by the load. Measured on this box the
-        same day: `large-v3` is 3.5 s and cvoiced is ~7.6 s, so a literal
-        reading makes an urgent call ring about eight seconds late -- against a
-        project whose whole speculative-input effort exists to save three to
-        five. The SIP ring is dead time that already absorbs a 4.7 s CallAgent
-        seed for exactly this reason, so the load hides there instead. If he
-        picks up before it finishes, the first `synthesize` waits rather than
-        the doorbell.
+        if self._channel(conversation) is None:
+            raise HttpError(404, f"no conversation {conversation}")
+        self._close_conversation(conversation)
+        return {"conversation": conversation, "closed": True}
 
-        Failures are logged and swallowed: a model that will not load must cost
-        the voice leg, never the ring. That is the same rule `build_voice`
-        follows and the reason a mute call beats a silent one.
+    async def call_health(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The doorbell fields for /health, and what hotline-calld said.
+
+        Asked over HTTP every time, never cached: the failure this endpoint
+        exists to catch is a ringer that stopped working while something kept
+        reporting it fine.
         """
-        def work() -> None:
-            for name, thing in (("ears", self.transcriber), ("voice", self.speaker)):
-                loader = getattr(thing, "load", None)
-                if loader is None:
-                    continue
-                try:
-                    began = time.monotonic()
-                    loader()
-                    log.info("warmed %s in %.1fs", name, time.monotonic() - began)
-                except Exception:
-                    log.exception("could not warm %s; the call may be mute", name)
+        from .calld import CALL_FIELDS, CalldUnreachable
 
-        with self._models_lock:
-            self._calls_holding_models += 1
-            if self._calls_holding_models > 1:
-                # Another call already has them up. Loading is idempotent, but
-                # a second thread would serialise behind the first one's lock
-                # for no gain.
-                return
-        threading.Thread(target=work, name="warm-models", daemon=True).start()
+        down = {"ok": False, "fake": False, "ring_ready": False, "transport": "none",
+                "rings_when_closed": False, "transports_available": [], "inbound": None}
+        if self.calld is None:
+            return down, {"url": None, "reachable": False,
+                          "degradations": ["no hotline-calld configured; nothing can ring him"]}
+        try:
+            remote = await asyncio.get_running_loop().run_in_executor(None, self.calld.health)
+        except CalldUnreachable as exc:
+            return down, {"url": self.calld.url, "reachable": False,
+                          "degradations": [f"unreachable, so nothing can ring him: {exc}"]}
+        fields = {**down, **{key: remote[key] for key in CALL_FIELDS if key in remote}}
+        info = {"url": self.calld.url, "reachable": True,
+                "degradations": list(remote.get("degradations") or []),
+                "forward_failures": self.calld.forward_failures}
+        if self.calld.last_forward_error:
+            info["last_forward_error"] = self.calld.last_forward_error
+        return fields, info
 
-    def _cool_models(self) -> None:
-        """Drop the models once the LAST call using them has ended.
-
-        Refcounted because two agents can ring him in the same minute -- the
-        case `_voice_leg` already exists to handle. Unloading on the first call
-        to finish would pull `large-v3` out from under the second one mid-
-        sentence.
-
-        Runs on a thread: `Voice.unload` is an HTTP round trip to cvoiced and
-        this is called from the event loop's `finally`, where blocking would
-        stall every other conversation the daemon is holding.
-        """
-        with self._models_lock:
-            self._calls_holding_models = max(0, self._calls_holding_models - 1)
-            if self._calls_holding_models:
-                return
-
-        def work() -> None:
-            for name, thing in (("ears", self.transcriber), ("voice", self.speaker)):
-                unloader = getattr(thing, "unload", None)
-                if unloader is None:
-                    continue
-                try:
-                    unloader()
-                except Exception:
-                    log.exception("could not unload %s; its memory stays held", name)
-
-        threading.Thread(target=work, name="cool-models", daemon=True).start()
-
-    @contextlib.contextmanager
-    def _voice_leg(self, doorbell: Any, target: CallTarget, conversation: str,
-                   engine: str = "", prepared: Any = None) -> Any:
-        """Give this one ring a voice, and take it away again afterwards.
-
-        Installed per ring rather than once at construction -- which is where
-        `SipTransport(on_answer=...)` makes it look like it belongs -- because
-        the handler has to know *which* conversation it is answering, and
-        `place()` is the only place that knows. A handler built at startup would
-        have to guess, and the guess would be wrong the moment two agents ring
-        him in the same minute.
-
-        Taking it away again is not tidiness. A `SipTransport` with no handler
-        ACKs the 200 and hangs up at once, and `hotline-page` and the
-        confirmed-ring path both depend on that: a ring that holds a call it has
-        nothing to say on is worse than one that does not.
-        """
-        if engine == "personaplex":
-            yield from self._duplex_leg(doorbell, prepared)
+    def _forward_to_calld(self, path: str, body: dict[str, Any]) -> None:
+        """Tell hotline-calld, in the background. Never in the reply's way."""
+        if self.calld is None:
             return
-        # Nothing between here and the yield may raise. This runs inside
-        # `place()`'s try, whose except clauses are the ring outcomes -- so an
-        # exception escaping here is not a silent call, it is a 500 and NO ring
-        # at all, which is worse than the bug this whole path fixes.
         try:
-            links = holds_calls(doorbell) if self.can_talk else []
-            handlers = [self._answered_call(target, conversation, link, engine) for link in links]
-        except Exception:
-            log.exception("could not build the answered-call handler; ringing anyway")
-            yield None
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
             return
-        if not links:
-            # Nothing can hold an answered call, so nothing will need a model.
-            yield None
-            return
-        # From here there IS a voice leg, so the models are wanted. Started now,
-        # while it rings; released in the `finally` below, however it ends.
-        self._warm_models()
-        restore = [(link, link.on_answer) for link in links]
-        for link, handler in zip(links, handlers, strict=True):
-            link.on_answer = handler
-        try:
-            yield handlers[0] if len(handlers) == 1 else _the_one_that_ran(handlers)
-        finally:
-            # Unconditionally, however the ring ended. A handler left installed
-            # would make the NEXT ring -- possibly hotline-page's -- hold a call
-            # it has nothing to say on and answer it with a stale question.
-            for link, was in restore:
-                link.on_answer = was
-            # Same scope, same rule. `on_answer` runs inside `doorbell.ring()`,
-            # so by the time this block runs the call is over -- declined,
-            # unanswered, or hung up -- and nothing needs the GPU any more.
-            self._cool_models()
-
-    def _prepare_duplex(self, doorbell: Any, target: CallTarget, conversation: str,
-                        loop: Any) -> tuple[list[Any], list[Any], str]:
-        """Start PersonaPlex for every link that can hold the call and wait until it
-        is READY. Runs in an executor, BEFORE the ring: if the model cannot start,
-        the call fails without his phone ever ringing.
-
-        Deliberately does NOT warm Whisper or cvoiced, and does not need
-        `can_talk`: PersonaPlex alone takes up to ~7.3 GiB of the 8 GiB card, so
-        the default call models must stay unloaded for it to fit at all.
-        """
-        from .duplexcall import DuplexCall, brief_prompt
-
-        def append(kind: str, text: str) -> None:
-            loop.call_soon_threadsafe(self._append, conversation, kind, text)
-
-        links = holds_calls(doorbell)
-        if not links:
-            return [], [], "no transport here can hold an answered call"
-        prompt = brief_prompt(target.reason, target.context, target.caller_id)
-        handlers = [DuplexCall(prompt=prompt, note=append,
-                               deliver=lambda text: append("you", text),
-                               hung_up=getattr(link, "far_end_hung_up", None),
-                               label=f"{target.caller_id}: {target.reason}")
-                    for link in links]
-        for handler in handlers:
-            if not handler.wait_ready(90.0):
-                why = handler.setup_error or "timed out waiting for the model"
-                for h in handlers:
-                    h.close()
-                return [], [], f"personaplex did not start: {why}"
-        return links, handlers, ""
-
-    def _duplex_leg(self, doorbell: Any, prepared: Any) -> Any:
-        """`_voice_leg` for `engine=personaplex`, with handlers `_prepare_duplex` built."""
-        links, handlers = prepared or ([], [])
-        if not links:
-            yield None
-            return
-        restore = [(link, link.on_answer) for link in links]
-        for link, handler in zip(links, handlers, strict=True):
-            link.on_answer = handler
-        try:
-            yield handlers[0] if len(handlers) == 1 else _the_one_that_ran(handlers)
-        finally:
-            for link, was in restore:
-                link.on_answer = was
-            for handler in handlers:
-                handler.close()
-
-    @property
-    def can_talk(self) -> bool:
-        """Whether an answered call could carry audio at all.
-
-        Both halves or neither: a call that can speak and not hear leaves him
-        talking to something that never replies, and one that can hear and not
-        speak is the silence this whole path exists to end."""
-        return self.speaker is not None and self.transcriber is not None
-
-    def _answered_call(self, target: CallTarget, conversation: str, link: Any,
-                       engine: str = "", *, inbound: bool = False) -> Any:
-        """The handler `SipTransport` calls when he picks up.
-
-        Everything crossing into it is a plain callable, so `conversation.py`
-        needs neither this daemon nor hotline to be tested -- and so `talk.py`
-        can build the same object out of different parts.
-        """
-        from .callagent import CallAgent, default_context, guest_agent
-        from .conversation import AnsweredCall
-        from .media.record import from_environment
-
-        loop = asyncio.get_running_loop()
-        speaker, transcriber = self.speaker, self.transcriber
-        speakable = _speakable()
-
-        def speak(text: str) -> tuple[Any, int]:
-            audio = speaker.synthesize(text)
-            return audio, int(getattr(speaker, "rate", 24_000))
-
-        def append(kind: str, text: str) -> None:
-            # Called from the media thread. `_append` touches an EventLog whose
-            # waiters are parked on the event loop, so it is handed back there
-            # rather than called across threads.
-            loop.call_soon_threadsafe(self._append, conversation, kind, text)
-
-        agent = None
-        if os.environ.get("HOTLINE_IOS_CALL_SESSION", "1") != "0" and inbound:
-            # He dialled us. Nobody rang him and nothing is waiting on an
-            # answer, so the "an agent rang you to ask X" brief would be a lie
-            # the voice repeats back to him.
-            agent = CallAgent(default_context(
-                "THIS CALL: Bogdan called YOU. He dialled hotline himself from his\n"
-                "phone; no agent rang him and there is no question waiting for an\n"
-                "answer. You have already greeted him -- let him say why he called,\n"
-                "and everything he says on this call is for you."
-            ))
-            agent.start()
-        elif os.environ.get("HOTLINE_IOS_CALL_SESSION", "1") != "0" and target.address:
-            # Ringing somebody who is not him. Different manners, different
-            # language, and no `call_context.txt` -- see `guest_agent`. The
-            # calling agent's brief is the ONLY thing this voice knows.
-            who = (f"{target.caller_id} zove osobu {target.callee} u Bogdanovo ime.\n"
-                   f"RAZLOG: {target.reason}")
-            brief = target.context.strip()
-            agent = guest_agent(
-                target.callee,
-                f"{who}\n\nSTA AGENT KOJI ZOVE ZELI DA ZNAS:\n{brief}" if brief else who,
-            )
-            agent.start()
-        elif os.environ.get("HOTLINE_IOS_CALL_SESSION", "1") != "0":
-            # The calling agent's own briefing goes in FIRST and is labelled as
-            # the authority, because it is current and this file is not: nothing
-            # regenerates call_context.txt and it is dated in its own first line.
-            brief = target.context.strip()
-            agent = CallAgent(default_context(
-                (f"WHAT THE CALLING AGENT WANTS YOU TO KNOW -- this is current and\n"
-                 f"outranks anything above it that disagrees:\n{brief}\n\n" if brief else "")
-                + f"THIS CALL: {target.caller_id} rang him to ask -- {target.reason}\n"
-                "He has just been asked that and is answering it out loud. His first\n"
-                "answer goes back to the agent that rang; anything after it is yours."
-            ))
-            # Seeded WHILE the phone rings, not after he answers. Costs ~4.7 s
-            # and there are usually more than that between the INVITE and him
-            # picking up; `CallAgent.reply` waits for it if there were not.
-            agent.start()
-
-        ask_stream = speak_stream = ask_fork = None
-        bridge = None
-        if engine == "haiku" and agent is not None and not target.address:
-            # His test, 2026-10-30: Haiku 5.5 over the API, its tokens streamed
-            # straight into cvoiced. The CallAgent seeded above stays as the
-            # fallback for a missing key or an old cvoiced; its seed costs
-            # nothing he hears, it runs while the phone rings.
-            from .haikuagent import HaikuAgent
-
-            # "spoji me sa <agent>": his request, 2026-10-31. Only on his own
-            # calls (not a guest's), and only with the Haiku voice, which is
-            # what understands the name. See agentbridge.py.
-            from .haikuagent import MANNERS
-
-            manners, extra = MANNERS, None
-            if os.environ.get("HOTLINE_IOS_BRIDGE", "1") != "0":
-                from .agentbridge import AgentBridge
-
-                bridge = AgentBridge()
-                manners, extra = f"{MANNERS}\n- {bridge.manners()}", bridge.tools()
-            haiku = HaikuAgent(agent.context, manners=manners,   # already call_context.txt + this call
-                               extra_tools=extra)
-            if haiku.failed:
-                log.error("call %s: haiku engine unavailable (%s); classic voice instead",
-                          conversation, haiku.failed)
-                self._append(conversation, "error",
-                             f"haiku engine unavailable ({haiku.failed}); the classic voice took the call")
-            elif not hasattr(speaker, "stream"):
-                log.error("call %s: the TTS client cannot stream; classic voice instead", conversation)
-            else:
-                ask_stream, speak_stream = haiku.reply_stream, speaker.stream
-                if bridge is not None:
-                    ask_stream = bridge.stream_for(haiku)
-                haiku.start()   # opens the API connection while the phone rings
-
-                def ask_fork(haiku=haiku):
-                    twin = haiku.fork()
-                    return twin.reply_stream, lambda: haiku.adopt(twin)
-
-        return AnsweredCall(
-            speak=speak,
-            transcribe=lambda audio: str(transcriber.transcribe(audio)),
-            fillers=self.fillers,
-            # Plays while cvoiced is still warming. Without some clip here a
-            # guest hears ~9 s of silence after picking up; `greet` itself names
-            # Bogdan, so a guest gets its own.
-            opening="greet_guest" if target.address else "greet",
-            # Inbound: the clip ("Zdravo Bogdane, ovde hotline. Slušam te.") is
-            # the whole greeting. There is no question to read out.
-            greeting="" if inbound else str(speakable(
-                # Serbian, like the guest manners themselves. The TTS voice is a
-                # Serbian one and the ASR runs with a Serbian hint, so an English
-                # greeting is mispronounced on the way out and mis-heard on the
-                # way back.
-                f"{target.callee}, {target.reason}"
-                if target.address else f"{target.caller_id}: {target.reason}"
-            )),
-            deliver=lambda text: append("you", text),
-            ask=agent.reply if agent is not None else None,
-            ask_stream=ask_stream,
-            speak_stream=speak_stream,
-            ask_fork=ask_fork,
-            hung_up=getattr(link, "far_end_hung_up", None),
-            may_speculate=bridge.may_speculate if bridge is not None else None,
-            # Generous only when an agent is (or is being) put on the line: a
-            # Claude session's turn is tens of seconds, not Haiku's one or two.
-            answer_seconds=(lambda b=bridge: (b.answer_seconds if b.connected
-                                              else b.connect_seconds) + 20.0)
-            if bridge is not None else None,
-            on_end=(lambda why, b=bridge: b.release(why)) if bridge is not None else None,
-            note=append,
-            recorder=from_environment(f"{target.caller_id}: {target.reason}"),
-            model=repr(transcriber),
-        )
-
-    # ---- him calling us ---------------------------------------------------
-
-    def inbound_call(self, call: Any) -> Any:
-        """`SipInbound.on_call`. Runs on the SIP thread; the work runs on the loop.
-
-        `_answered_call` and `_open_conversation` touch loop-owned state, so
-        they are built there and handed back. Bounded, because the SIP thread
-        is also what keeps the registration alive.
-        """
-        if self.loop is None:
-            return None
-        future = asyncio.run_coroutine_threadsafe(self._inbound_leg(call), self.loop)
-        return future.result(timeout=10.0)
-
-    async def _inbound_leg(self, call: Any) -> Any:
-        from .ring.inbound import Busy
-
-        if self._gpu_lock.locked():
-            # A PersonaPlex call has cvoiced down and the card full; the
-            # inbound voice would have nothing to speak with.
-            raise Busy("a PersonaPlex call holds the GPU")
-        if not self.can_talk:
-            log.error("inbound call from %s: no voice or no ears here; not answering",
-                      call.caller)
-            return None
-        conversation, _events = self._open_conversation(None, "say")
-        self._append(conversation, "state", "he called hotline")
-        target = CallTarget(device="phone", agent=None, reason="Bogdan called hotline",
-                            caller_id="Bogdan", context="", address="", callee="Bogdan")
-        engine = os.environ.get("HOTLINE_IOS_INBOUND_ENGINE", "haiku").strip().lower()
-        if engine in ("classic", "auto"):
-            engine = ""
-        # Warmed while it rings, exactly as an outbound ring does, and released
-        # by `_InboundLeg` however the call ends -- answered or cancelled.
-        self._warm_models()
-        try:
-            handler = self._answered_call(target, conversation, call, engine, inbound=True)
-        except Exception:
-            self._cool_models()
-            self._close_conversation(conversation)
-            raise
-        log.info("inbound call %s from %s: engine %s", conversation, call.caller,
-                 engine or "classic")
-        return _InboundLeg(self, conversation, handler, asyncio.get_running_loop())
-
-    async def place(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Ring him, then wait for him to answer in the app.
-
-        This is `hotline-page`'s contract kept intact across a change of
-        doorbell. The ring is a Telegram call; the *answer* comes back through
-        the app, as a typed reply into the conversation this opens. So a blocked
-        agent still gets his words on stdout and does not need to know that the
-        thing which rang and the thing he replied in are different programs.
-
-        The alternative -- ring and exit, and let the reply arrive as an
-        injected message -- would have quietly broken every caller that does
-        `answer=$(hotline-call ...)`, which is all of them.
-        """
-        reason = str(body.get("reason", "")).strip()
-        if not reason:
-            from hotline.httpd import HttpError
-
-            raise HttpError(400, "reason is required")
-
-        agent = body.get("agent") or None
-        # `to` rings somebody who is not him: a registry person's own Linphone
-        # account, dialed with our credentials. Absent, everything below behaves
-        # exactly as it did before hotline-registry existed.
-        to = str(body.get("to", "")).strip()
-        target = CallTarget(
-            device=str(body.get("device", "phone")),
-            agent=str(agent) if agent else None,
-            reason=reason,
-            caller_id=str(body.get("source", "Claude")),
-            context=str(body.get("context", "")),
-            address=to,
-            callee=str(body.get("callee", "")).strip() or ("someone" if to else "Bogdan"),
-        )
-        ring_timeout = float(body.get("ring_timeout", 45.0))
-        reply_timeout = float(body.get("timeout", 900.0))
-        wait = bool(body.get("wait", True))
-
-        doorbell = self._resolve_transport(str(body.get("transport", "")))
-        if to:
-            # SIP is the only transport that can dial an arbitrary address. Every
-            # other one -- Telegram, the local app socket, loopback -- reaches
-            # exactly one person, and that person is HIM. Falling through to one
-            # of those on a registry call would ring Bogdan with a question meant
-            # for somebody else and report it as delivered, which is the worst
-            # failure this endpoint has available to it. So: resolve to the bare
-            # SIP link, or refuse out loud.
-            from hotline.httpd import HttpError
-
-            sip_link = self.links.get("sip")
-            if sip_link is None:
-                raise HttpError(
-                    503,
-                    "calling someone other than Bogdan needs the sip transport, "
-                    f"and this daemon has: {', '.join(sorted(self.links)) or 'none'}",
-                )
-            if str(body.get("transport", "")).strip().lower() not in ("", "auto", "sip"):
-                raise HttpError(400, "'to' can only be rung over the sip transport")
-            doorbell = sip_link
-
-        conversation, events = self._open_conversation(agent, "ring")
-        # Put the question in the conversation before ringing, so that whenever
-        # he opens the app -- during the ring, or an hour later -- it is already
-        # there and he never answers a phone to silence.
-        self._append(conversation, "claude", f"{target.caller_id}: {reason}")
-        if str(body.get("context", "")):
-            self._append(conversation, "summary", str(body["context"])[:1200])
-        began = time.monotonic()
-        # Taken BEFORE the ring and not after. Since the call can now carry
-        # audio, his answer can arrive as an entry appended *during*
-        # `doorbell.ring()`; a cursor read afterwards would already be past it
-        # and `_await_reply` would wait its full timeout for a question he had
-        # answered out loud thirty seconds earlier. Nothing could append during a
-        # ring before this change, which is why the old ordering was fine and is
-        # not any more.
-        cursor = events.latest
-
-        engine = str(body.get("engine", "") or "").strip().lower()
-        if engine in ("", "auto"):
-            engine = "" if to else self.default_engine
-        if engine == "classic":
-            engine = ""
-        prepared = None
-        handoff = None
-        note = ""
-        loop = asyncio.get_running_loop()
-        holds_gpu = False
-        if engine == "personaplex" or self._gpu_lock.locked():
-            # ~180 s covers a PersonaPlex call at its 150 s cap plus the transcription
-            try:
-                await asyncio.wait_for(self._gpu_lock.acquire(), self.gpu_wait_s)
-                holds_gpu = True
-            except TimeoutError:
-                note = (f"waited {self.gpu_wait_s:.0f} s for another PersonaPlex call to "
-                        "finish and went ahead anyway")
-                log.warning("call %s: %s", conversation, note)
-            if holds_gpu and engine != "personaplex":
-                self._gpu_lock.release()   # it only had to wait for cvoiced to be back
-                holds_gpu = False
-        if engine == "personaplex":
-            if self.gpu_handoff is not None:
-                handoff = self.gpu_handoff()
-                await loop.run_in_executor(None, handoff.acquire)
-            try:
-                links, handlers, why = await loop.run_in_executor(
-                    None, self._prepare_duplex, doorbell, target, conversation, loop)
-            except Exception as exc:
-                log.exception("call %s: preparing personaplex raised", conversation)
-                links, handlers, why = [], [], f"{type(exc).__name__}: {exc}"
-            if why:
-                # Not rung on PersonaPlex. Bogdan's rule (2026-10-16): place the call on
-                # the Serbian path instead of failing it, and say so. cvoiced has to be
-                # back first, because that path speaks through it.
-                log.error("call %s: personaplex did not start (%s); ringing on the Serbian path", conversation, why)
-                if handoff is not None:
-                    restored = await loop.run_in_executor(None, handoff.release)
-                    handoff = None
-                    if "NOT healthy" in restored or "could not" in restored:
-                        note = f"; {restored}"
-                note = f"PersonaPlex did not start ({why}); the call went on the Serbian voice path instead{note}"
-                self._append(conversation, "error", note)
-                engine = ""
-                if holds_gpu:
-                    self._gpu_lock.release()
-                    holds_gpu = False
-            else:
-                prepared = (links, handlers)
-        try:
-            try:
-                with self._voice_leg(doorbell, target, conversation, engine, prepared) as spoken:
-                    await doorbell.ring(target, timeout=ring_timeout)
-            finally:
-                # However the ring ended -- answered and hung up, declined, unanswered,
-                # unreachable, or an exception -- cvoiced comes back before anything else:
-                # every other call and page speaks through it.
-                try:
-                    if handoff is not None:
-                        restored = await loop.run_in_executor(None, handoff.release)
-                        if "NOT healthy" in restored or "could not" in restored:
-                            note = f"{note}; {restored}" if note else restored
-                            self.degradations.append(restored)
-                finally:
-                    if holds_gpu:
-                        self._gpu_lock.release()
-        except CallDeclined as exc:
-            self._append(conversation, "state", "declined")
-            self._close_conversation(conversation)
-            return self._outcome(conversation, "declined", began, str(exc), transport=doorbell, engine=engine or "classic", note=note)
-        except CallUnanswered as exc:
-            # It rang and he did not pick up. Record that it went unanswered and
-            # close it, at his instruction (2026-09-01, overriding SPEC 3's
-            # keep-open rule). Closing does NOT lose a late answer: `reply()`
-            # does not gate on `closed` and `_channel()` reads a closed row back
-            # in, so he can still open the app and answer. Close only drops it
-            # from `active_calls` and the waiting roster -- the leak he asked to
-            # stop.
-            self._append(conversation, "state", "unanswered")
-            self._close_conversation(conversation)
-            return self._outcome(conversation, "unanswered", began, str(exc), transport=doorbell, engine=engine or "classic", note=note)
-        except (CallUnreachable, CallError) as exc:
-            self.degradations.append(str(exc))
-            log.warning("call %s undeliverable: %s", conversation, exc)
-            self._append(conversation, "error", str(exc))
-            self._close_conversation(conversation)
-            return self._outcome(conversation, "unreachable", began, str(exc), transport=doorbell, engine=engine or "classic", note=note)
-
-        if not wait:
-            return self._outcome(conversation, "ringing", began, "not waiting", transport=doorbell, engine=engine or "classic", note=note)
-
-        # He may already have answered out loud, in which case the entry is
-        # sitting past `cursor` and this returns at once.
-        if spoken is not None and spoken.answered:
-            log.info("call %s answered by voice after %d turn(s): %s",
-                     conversation, spoken.turns, spoken.stats)
-        reply = await self._await_reply(events, reply_timeout, cursor)
-        if not reply:
-            # Rang, connected, but no answer came back in time. Same rule as the
-            # ring-out above: say it went unanswered, then close it. He can still
-            # answer later; this only stops it counting as an active call.
-            self._append(conversation, "state", "unanswered")
-            self._close_conversation(conversation)
-            return self._outcome(conversation, "unanswered", began,
-                                 f"rang, but nothing came back within {reply_timeout:.0f}s",
-                                 transport=doorbell, engine=engine or "classic", note=note)
-        transcript: list[dict[str, str]] = [{"who": "you", "text": reply}]
-        turns_spoken = int(getattr(spoken, "turns", 0) or 0)
-        if spoken is not None and turns_spoken:
-            # He is on the line. Wait out the call and hand back all of it; the
-            # first turn is already in `reply` for anything that only wants that.
-            left = max(0.0, reply_timeout - (time.monotonic() - began))
-            whole = await self._await_transcript(events, left, cursor, spoken)
-            if whole:
-                transcript = whole
-        return self._outcome(conversation, "answered", began, "", reply,
-                             transport=doorbell, transcript=transcript,
-                             engine=engine or "classic", note=note)
-
-    async def _await_reply(self, events: EventLog, timeout: float,
-                           cursor: int | None = None) -> str:
-        """Block until he answers -- typed in the app, or spoken on the call.
-
-        `cursor` is passed in by `place()`, which takes it before the ring. The
-        default of "wherever the log is now" is only correct for a caller that
-        could not have been answered already.
-        """
-        deadline = time.monotonic() + timeout
-        if cursor is None:
-            cursor = events.latest
-        while time.monotonic() < deadline:
-            found = await events.wait(cursor, min(20.0, deadline - time.monotonic()))
-            for entry in found:
-                cursor = max(cursor, entry.seq)
-                if entry.kind == "you":
-                    return entry.text
-            if events.closed:
-                break
-        return ""
-
-    async def _await_transcript(self, events: EventLog, timeout: float, cursor: int,
-                                spoken: Any) -> list[dict[str, str]]:
-        """Everything he said on the call, not only the answer to the question.
-
-        His instruction, 2026-09-11: *"It should get the whole convo."* The
-        calling agent rang to have a conversation; returning only the first turn
-        threw the rest away -- it was written into the conversation log and never
-        handed back.
-
-        Two things keep this from blocking a caller that is not on a voice call.
-        It only runs once a spoken turn has actually happened (`spoken.turns`),
-        so a typed answer in the app still returns the instant it lands; and
-        `ended` is the sentinel `"not started"` until a terminal path sets it, so
-        the moment the call finishes -- goodbye, hangup, dead line, length cap --
-        this stops. The caller's own deadline caps it either way.
-        """
-        said: list[dict[str, str]] = []
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            found = await events.wait(cursor, min(5.0, max(0.1, deadline - time.monotonic())))
-            for entry in found:
-                cursor = max(cursor, entry.seq)
-                # Both sides. `client.CallOutcome.transcript` has always been
-                # typed for this and the daemon never filled it, so an agent
-                # asking for the conversation got None.
-                if entry.kind in ("you", "claude"):
-                    said.append({"who": entry.kind, "text": entry.text})
-            done = getattr(spoken, "transcribed", None)
-            if done is not None:
-                # A duplex call: the transcript is delivered after the line drops, so
-                # "ended" alone is too early. Stop once it is all delivered, after one
-                # short drain for appends still queued on the event loop.
-                finished = done.is_set()
-            else:
-                finished = getattr(spoken, "ended", "not started") != "not started"
-            if events.closed or finished:
-                if done is not None:
-                    for entry in await events.wait(cursor, 0.3):
-                        cursor = max(cursor, entry.seq)
-                        if entry.kind in ("you", "claude"):
-                            said.append({"who": entry.kind, "text": entry.text})
-                break
-        return said
+        future = loop.run_in_executor(None, self.calld.forward, path, body)
+        future.add_done_callback(lambda f: f.cancelled() or f.exception())
 
     def _registry_record(self, agent: str) -> Any:
         """hotline's registry entry for a name, or None. The one lookup.
@@ -1302,42 +674,6 @@ class Service:
             # of the named one. Worth logging, never worth dropping the call.
             log.exception("could not bind %s to %s", key, agent)
 
-    def _outcome(
-        self,
-        call_id: str,
-        state: str,
-        began: float,
-        detail: str = "",
-        reply: str = "",
-        transport: Any = None,
-        transcript: list[dict[str, str]] | None = None,
-        engine: str = "",
-        note: str = "",
-    ) -> dict[str, Any]:
-        used = transport if transport is not None else self.transport
-        out: dict[str, Any] = {
-            "call_id": call_id,
-            "conversation": call_id,
-            "state": state,
-            "reply": reply,
-            "transcript": (transcript if transcript is not None
-                           else ([{"who": "you", "text": reply}] if reply else [])),
-            "detail": detail,
-            "waited_seconds": round(time.monotonic() - began, 1),
-            "transport": getattr(used, "name", "?"),
-            "rings_when_closed": bool(getattr(used, "rings_when_closed", False)),
-            # Callers cannot otherwise tell a ring from a no-op: "answered via
-            # loopback+confirmed" and "answered via sip+confirmed" are the same
-            # sentence. This is the field that distinguishes them, and
-            # hotline-call refuses to report success when it is true.
-            "fake": bool(getattr(used, "is_fake", False)),
-            # who held the call ("personaplex" or "classic"), and why that is not what
-            # was asked for when PersonaPlex fell back
-            "engine": engine,
-            "note": note,
-        }
-        return out
-
     async def hang_up(self, call_id: str) -> dict[str, Any]:
         """Dismiss a conversation from the phone's side.
 
@@ -1352,6 +688,9 @@ class Service:
         if events is not None and not events.closed:
             self._append(call_id, "state", "ended")
             self._close_conversation(call_id)
+        # If a hotline-call is blocked on this conversation it is waiting in
+        # hotline-calld, which only learns he dismissed it from this.
+        self._forward_to_calld("/api/v1/call/hangup", {"call_id": call_id})
         return {
             "call_id": call_id,
             "ended": events is not None,
@@ -2746,6 +2085,11 @@ class Service:
         except Exception:  # the answer is delivered either way
             log.exception("could not mark %s answered", conversation)
         self._roster_waker.wake()
+        # The agent blocked on `hotline-call` is waiting in hotline-calld, not
+        # here. Forwarded for every reply: this daemon does not know which
+        # conversations a live call is waiting on, and hotline-calld answers
+        # `known: false` for the rest.
+        self._forward_to_calld("/api/v1/call/reply", {"conversation": conversation, "text": text})
         return {"conversation": conversation, "delivered": True, "client_token": client_token}
 
     # ---- the live feed ---------------------------------------------------
@@ -2766,48 +2110,6 @@ class Service:
             "gap": events.gap(since),
             "dropped": events.dropped,
         }
-
-
-class _InboundLeg:
-    """One inbound call's handler, plus the cleanup a ring gets from `_voice_leg`.
-
-    Called by `SipInbound` like any `on_answer` handler once it has answered;
-    `abandon` instead when he hangs up while it is still ringing. Either way the
-    models are released and the conversation closed exactly once.
-    """
-
-    def __init__(self, service: Service, conversation: str, handler: Any,
-                 loop: asyncio.AbstractEventLoop) -> None:
-        self.service = service
-        self.conversation = conversation
-        self.handler = handler
-        self.loop = loop
-        self._done = threading.Lock()
-        self._finished = False
-
-    def __call__(self, reply: str, media_sock: Any, key: bytes, salt: bytes) -> None:
-        try:
-            self.handler(reply, media_sock, key, salt)
-        finally:
-            ended = getattr(self.handler, "ended", "") or "ended"
-            self._finish(f"call over: {ended}")
-
-    def abandon(self, why: str) -> None:
-        self._finish(f"not answered: {why}")
-
-    def _finish(self, note: str) -> None:
-        with self._done:
-            if self._finished:
-                return
-            self._finished = True
-        self.service._cool_models()
-
-        def close() -> None:
-            self.service._append(self.conversation, "state", note)
-            self.service._close_conversation(self.conversation)
-
-        with contextlib.suppress(RuntimeError):  # the loop is gone: shutting down
-            self.loop.call_soon_threadsafe(close)
 
 
 def _declared_at(record: Any, session: Any, annotation: dict[str, Any]) -> float | None:
@@ -2884,15 +2186,6 @@ def _first_offset(session_id: str) -> int:
     return max(0, size - ingest.FIRST_SLICE_BYTES)
 
 
-def _speakable():
-    try:
-        from hotline.voice import speakable
-
-        return speakable
-    except Exception:  # noqa: BLE001 - unpolished speech beats no answer
-        return lambda text: text
-
-
 def _typed(agent: str | None):
     """Label a delegated instruction as typed from his phone.
 
@@ -2906,33 +2199,6 @@ def _typed(agent: str | None):
         return Origin(kind="phone", label="typed in the hotline app on his phone")
     except Exception:  # noqa: BLE001 - an unlabelled turn beats a dropped one
         return None
-
-
-def _origin(target: CallTarget):
-    """Label the turn as spoken, on a phone call.
-
-    Not cosmetic. A mis-transcription reaching a `bypassPermissions` session has
-    no undo, and the session cannot exercise judgement about that if it cannot
-    tell speech from typing.
-    """
-    try:
-        from hotline.provenance import Origin
-
-        return Origin(
-            kind="voice",
-            label=f"spoken on a phone call to {target.device}",
-            author_id=None,
-            channel_id=None,
-        )
-    except Exception:  # noqa: BLE001 - an unlabelled turn beats a dropped one
-        return None
-
-
-def _last_from_him(session: Any) -> str:
-    for who, text in reversed(getattr(session, "transcript", [])):
-        if who == "you":
-            return str(text)
-    return ""
 
 
 def build_server(service: Service, host: str | Sequence[str], port: int) -> Any:
@@ -2957,7 +2223,6 @@ def build_server(service: Service, host: str | Sequence[str], port: int) -> Any:
 
     @server.route("GET", "/health")
     async def health(request: Any) -> tuple[int, dict[str, Any]]:
-        fake = bool(getattr(service.transport, "is_fake", False))
         service.reap()
         # Checked here, now, not remembered from boot. `db_ok` reports a query
         # that just ran; a database that has since gone read-only or had its
@@ -2980,21 +2245,22 @@ def build_server(service: Service, host: str | Sequence[str], port: int) -> Any:
             note = f"store not readable: {stats.get('db_error', 'unknown')}"
             if not service.degradations or service.degradations[-1] != note:
                 service.degradations.append(note)
+        # The doorbell's state is hotline-calld's now, asked for now. The app
+        # and the call-bogdan skill still read `ok`, `fake`, `ring_ready` and
+        # `transport` here, so they are copied across under the same names.
+        calls, calld = await service.call_health()
         return 200, {
             **stats,
-            # NOT ok when the doorbell is fake. A health check that reports ok
-            # while the pager rings nothing is the exact failure this endpoint
-            # exists to catch, and it reported ok:true for 2.5 hours.
-            "ok": (not fake) and service.ring_ready,
-            "fake": fake,
-            "ring_ready": service.ring_ready,
+            # NOT ok when the doorbell is fake, did not start, or hotline-calld
+            # is not answering. A health check that reports ok while the pager
+            # rings nothing is the exact failure this endpoint exists to catch,
+            # and it reported ok:true for 2.5 hours on 2026-08-25.
+            **calls,
+            # Where the calls went, and whether it answered just now. Its
+            # presence is also how hotline-call's installer tells a split
+            # hotline-iosd from one that still rings him itself.
+            "calld": calld,
             "uptime_seconds": round(time.time() - service.started, 1),
-            "transport": getattr(service.transport, "name", "?"),
-            "rings_when_closed": bool(getattr(service.transport, "rings_when_closed", False)),
-            "transports_available": sorted(service.links),
-            # He can call us: the persistent registration's own state, or null
-            # when inbound is switched off.
-            "inbound": service.inbound.status() if service.inbound is not None else None,
             "active_calls": service.open_calls(),
             "conversations_held": len(service.calls),
             "listening_on": [f"{h}:{service.listen_port}" for h in service.listen_hosts],
@@ -3019,13 +2285,55 @@ def build_server(service: Service, host: str | Sequence[str], port: int) -> Any:
             "ingest_stalled": sorted(service.ingest_stalled),
             # Surfaced on the health endpoint on purpose: a ringer that has been
             # silently degrading is exactly what a health check is for.
-            "degradations": service.degradations[-5:],
+            "degradations": service.degradations[-5:] + [
+                f"calld: {note}" for note in calld.get("degradations", [])],
         }
 
     @server.route("POST", "/api/v1/call")
     async def place(request: Any) -> tuple[int, dict[str, Any]]:
+        """Forwarded to hotline-calld, which owns calls, for the transition.
+
+        Same path, same body, same answer -- including its error statuses -- so
+        an agent still posting here rings him exactly as before. Unreachable is
+        a 503, which `hotline-call` already turns into a hotline-page fallback.
+        """
         service.authorise(request)
-        return 200, await service.place(request.json())
+        if service.calld is None:
+            raise HttpError(503, "calls are hotline-calld's; this hotline-iosd has none configured")
+        from .calld import CalldUnreachable
+
+        body = request.json() or {}
+        try:
+            status, payload = await asyncio.get_running_loop().run_in_executor(
+                None, service.calld.place, body)
+        except CalldUnreachable as exc:
+            raise HttpError(503, str(exc)) from exc
+        if status != 200:
+            raise HttpError(status, str(payload.get("error", payload)))
+        return 200, payload
+
+    # ---- hotline-calld writing a call into the app -------------------------
+
+    @server.route("POST", "/api/v1/conversations/open")
+    async def call_open(request: Any) -> tuple[int, dict[str, Any]]:
+        service.authorise(request)
+        body = request.json()
+        agent = body.get("agent")
+        return 200, service.call_open(str(body.get("conversation", "")),
+                                      str(agent) if agent else None,
+                                      str(body.get("kind", "ring")))
+
+    @server.route("POST", "/api/v1/conversations/append")
+    async def call_append(request: Any) -> tuple[int, dict[str, Any]]:
+        service.authorise(request)
+        body = request.json()
+        return 200, service.call_append(str(body.get("conversation", "")),
+                                        str(body.get("kind", "")), str(body.get("text", "")))
+
+    @server.route("POST", "/api/v1/conversations/close")
+    async def call_close(request: Any) -> tuple[int, dict[str, Any]]:
+        service.authorise(request)
+        return 200, service.call_close(str(request.json().get("conversation", "")))
 
     # POST rather than GET, and the cursor rides in the body.
     #
@@ -3224,198 +2532,6 @@ def build_server(service: Service, host: str | Sequence[str], port: int) -> Any:
     return server
 
 
-def build_voice() -> tuple[Any, Any, Any]:
-    """The three things an answered call needs: a voice, ears, and holding phrases.
-
-    A missing voice or missing ears means the daemon still rings, still opens a
-    conversation and still takes a typed answer in the app -- it simply hangs up
-    on the 200 the way it always did. That degradation is the point: a missing
-    model must cost the voice leg and never the doorbell. Missing fillers cost
-    only dead air.
-
-    **Why `large-v3` on the GPU is the default.** Measured on this box on
-    2026-09-09, on 2.5 s of his own cloned Serbian put through a real G.711
-    8 kHz roundtrip:
-
-    | model | where | time | what it heard |
-    |---|---|---|---|
-    | `large-v3` | cuda int8_float16 | **0.38 s** | word-perfect |
-    | `large-v3` | cpu int8 | 5.39 s | word-perfect |
-    | `small` | cpu int8 | 0.99 s | *"Zdravo o The Hotline, imam pitanju za tebe"* |
-
-    Fast and wrong is the worse failure on a phone call, so `small` is only the
-    fallback. The GPU is available at all because `cvoiced` at `takes=1` holds
-    2406 MiB rather than the 6452 it holds once it has loaded its take-scorer --
-    which leaves 5.7 GB, and `large-v3` int8_float16 wants about 1.9.
-    """
-    if os.environ.get("HOTLINE_IOS_VOICE", "1") == "0":
-        log.info("voice leg disabled by HOTLINE_IOS_VOICE=0; calls will ring and hang up")
-        return None, None, None
-    speaker: Any = None
-    transcriber: Any = None
-    fillers: Any = None
-    try:
-        from .media.tts import Voice
-
-        speaker = Voice()
-        health = speaker.health()
-        log.info("tts: %s, model_loaded=%s", speaker, health.get("model_loaded"))
-    except Exception as exc:  # noqa: BLE001 - a mute doorbell still rings
-        log.error("no voice for answered calls: %s", exc)
-        speaker = None
-    try:
-        from .media.ears import Ears
-
-        transcriber = Ears(
-            model=os.environ.get("HOTLINE_IOS_ASR_MODEL", "large-v3"),
-            device=os.environ.get("HOTLINE_IOS_ASR_DEVICE", "cuda"),
-            compute_type=os.environ.get("HOTLINE_IOS_ASR_COMPUTE", "int8_float16"),
-            language=os.environ.get("HOTLINE_IOS_ASR_LANGUAGE", "sr"),
-        )
-    except Exception as exc:  # noqa: BLE001 - same rule as above
-        log.error("no transcriber for answered calls: %s", exc)
-        transcriber = None
-    try:
-        from .media.tts import Fillers
-
-        fillers = Fillers()
-        fillers.load()
-    except Exception as exc:  # noqa: BLE001 - dead air, not a dead call
-        log.error("no holding phrases: %s", exc)
-        fillers = None
-    return speaker, transcriber, fillers
-
-
-def holds_calls(doorbell: Any) -> list[Any]:
-    """Every transport inside `doorbell` that can hold an answered call.
-
-    Walked rather than passed in, because what `place()` is handed depends on
-    `HOTLINE_IOS_RING`: one `ConfirmedRing` around a `SipTransport`, or a
-    `RingChain` of several. Both wrappers expose what they wrap (`inner`,
-    `links`), so this needs no cooperation from either.
-    """
-    if doorbell is None:
-        return []
-    inner = getattr(doorbell, "inner", None)
-    if inner is not None:
-        return holds_calls(inner)
-    links = getattr(doorbell, "links", None)
-    if links is not None:
-        return [found for link in links for found in holds_calls(link)]
-    return [doorbell] if hasattr(doorbell, "on_answer") else []
-
-
-def _the_one_that_ran(handlers: Sequence[Any]) -> Any:
-    """Which handler actually took the call, when a chain had several.
-
-    Only one link in a chain ever answers -- the chain stops at the first that
-    works -- so this is a lookup, not a merge."""
-    for handler in handlers:
-        if getattr(handler, "turns", 0) or getattr(handler, "answered", ""):
-            return handler
-    return handlers[0] if handlers else None
-
-
-def build_transport(
-    names: Sequence[str],
-    *,
-    confirm_within: float = 8.0,
-    allow_fake: bool | None = None,
-) -> Any:
-    """Assemble the doorbell from a list of names, in order.
-
-    "We will do both" is his instruction, and this is what makes it a
-    configuration rather than a fork: `HOTLINE_IOS_RING=telegram,sip` and the
-    chain falls through from one to the next. Each link is wrapped in
-    `ConfirmedRing` individually rather than the chain as a whole, because the
-    chain can only fall through on evidence -- wrapping the outside would let a
-    silent failure inside look like success.
-    """
-    from .ring.chain import RingChain
-    from .ring.watch import ConfirmedRing
-
-    if allow_fake is None:
-        allow_fake = os.environ.get("HOTLINE_IOS_ALLOW_FAKE", "") == "1"
-
-    links: list[Any] = []
-    for name in names:
-        name = name.strip().lower()
-        if not name:
-            continue
-        if name == "telegram":
-            from .ring.telegram import TelegramTransport
-
-            links.append(TelegramTransport())
-        elif name == "sip":
-            from .ring.sip import SipTransport
-
-            links.append(SipTransport())
-        elif name == "loopback":
-            from .ring.loopback import LoopbackTransport
-
-            if not allow_fake:
-                raise SystemExit(
-                    "hotline-iosd: refusing to start with the 'loopback' doorbell, "
-                    "which rings nothing. It was left running for 2.5 hours on "
-                    "2026-08-25 and every caller got exit 0 while he was never "
-                    "contacted. If that is genuinely what you want, set "
-                    "HOTLINE_IOS_ALLOW_FAKE=1 -- saying it twice is the point."
-                )
-            links.append(LoopbackTransport())
-        else:
-            raise SystemExit(
-                f"hotline-iosd: unknown ring transport {name!r}; "
-                "known: telegram, sip, loopback"
-            )
-    if not links:
-        raise SystemExit("hotline-iosd: no ring transport configured; set HOTLINE_IOS_RING")
-    wrapped = [ConfirmedRing(link, confirm_within=confirm_within) for link in links]
-    return wrapped[0] if len(wrapped) == 1 else RingChain(wrapped)
-
-
-def build_links(names: Sequence[str], *, confirm_within: float = 8.0,
-                allow_fake: bool | None = None) -> dict[str, Any]:
-    """The same doorbells, individually addressable by name.
-
-    So that `--transport sip` on a daemon configured `telegram,sip` selects the
-    SIP leg instead of being ignored. Built by calling build_transport once per
-    name, which keeps one construction path rather than two that can drift.
-    """
-    out: dict[str, Any] = {}
-    for name in names:
-        name = name.strip().lower()
-        if not name:
-            continue
-        out[name] = build_transport([name], confirm_within=confirm_within,
-                                    allow_fake=allow_fake)
-    return out
-
-
-def start_inbound(service: Service) -> None:
-    """Keep hotline's account registered so he can call it. Never fatal.
-
-    `HOTLINE_IOS_INBOUND=0` switches it off. Anything that goes wrong here --
-    no credentials, no network, a refused REGISTER -- is logged loudly and put
-    on /health, and the outbound doorbell carries on exactly as before: the
-    registration runs on its own thread and its own connection, and retries.
-    """
-    if os.environ.get("HOTLINE_IOS_INBOUND", "1") == "0":
-        log.info("inbound calls disabled by HOTLINE_IOS_INBOUND=0")
-        return
-    try:
-        from .ring.inbound import SipInbound
-
-        inbound = SipInbound(on_call=service.inbound_call)
-        inbound.start()
-    except Exception as exc:  # noqa: BLE001 - inbound must never cost outbound
-        note = f"inbound calls unavailable: {exc}"
-        log.error(note)
-        service.degradations.append(note)
-        return
-    service.inbound = inbound
-    log.info("inbound: registering %s@%s so he can call", inbound.user, inbound.domain)
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hotline-iosd")
     parser.add_argument(
@@ -3426,11 +2542,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--port", type=int, default=int(os.environ.get("HOTLINE_IOS_PORT", DEFAULT_PORT))
     )
-    parser.add_argument(
-        "--ring",
-        default=os.environ.get("HOTLINE_IOS_RING", "telegram"),
-        help="comma-separated doorbells, tried in order (telegram, loopback)",
-    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -3440,70 +2551,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     from hotline.config import load_env
     from hotline.pool import SessionPool
 
-    load_env()
-    # hotline's load_env() defaults to hotline's OWN .env, which has no SIP_* or
-    # TELEGRAM_* in it. Without this the daemon starts, reports a sip doorbell,
-    # and only says "sip is not configured" in a degradations field nobody was
-    # reading. Loaded second so hotline-ios's values win: load_env never
-    # overwrites what is already set.
-    load_env(pathlib.Path(__file__).resolve().parents[3] / ".env")
-    names = args.ring.split(",")
-    # Build each doorbell ONCE and compose the default from those same objects,
-    # so `--transport sip` selects the very transport the chain would use rather
-    # than a second copy of it -- and so starting the chain starts them all.
-    links = build_links(names)
-    if not links:
-        raise SystemExit("hotline-iosd: no ring transport configured; set HOTLINE_IOS_RING")
-    if len(links) == 1:
-        transport: Any = next(iter(links.values()))
-    else:
-        from .ring.chain import RingChain
+    from .calld import CallDaemon
 
-        transport = RingChain(list(links.values()))
+    load_env()
+    # hotline's load_env() defaults to hotline's OWN .env. This repo's .env is
+    # read after it; load_env never overwrites what is already set, so a key in
+    # both keeps hotline's value -- the same order hotline-calld uses, which is
+    # what keeps the two agreeing on HOTLINE_API_KEY.
+    load_env(pathlib.Path(__file__).resolve().parents[3] / ".env")
     allow = {
         ip.strip()
         for ip in os.environ.get("HOTLINE_ALLOW_IPS", "").split(",")
         if ip.strip()
     }
-    speaker, transcriber, fillers = build_voice()
-    from .gpu_handoff import GpuHandoff
-
+    calld = CallDaemon()
     service = Service(
-        transport,
         SessionPool(),
-        transcriber=transcriber,
-        speaker=speaker,
-        fillers=fillers,
         allow_ips=allow,
         api_key=os.environ.get("HOTLINE_API_KEY", ""),
-        # Bogdan, 2026-10-16: "Hotline-call uses stock personaplex from now on." Calls
-        # to him only; guests stay on the Serbian path. "" restores the old default.
-        default_engine=os.environ.get("HOTLINE_IOS_DEFAULT_ENGINE", "personaplex").strip().lower(),
-        gpu_handoff=lambda: GpuHandoff(health=speaker.health if speaker is not None else None),
+        calld=calld,
     )
-    if not service.can_talk:
-        # On /health rather than only in the log. A doorbell that rings and then
-        # gives him thirty seconds of silence is the exact failure this whole
-        # path exists to end, and it must not be something you can only discover
-        # by answering the phone.
-        service.degradations.append(
-            "answered calls carry no audio: this daemon can ring him but not talk"
-        )
-
-    service.set_links(links)
 
     async def run() -> None:
-        service.loop = asyncio.get_running_loop()
-        try:
-            await transport.start()
-            service.ring_ready = True
-        except Exception as exc:  # noqa: BLE001 - see comment
-            # Do NOT die. The daemon still serves the app, the agent list and the
-            # transcript feed without a working doorbell -- and a ringer that
-            # cannot start is exactly the thing that should be visible on
-            # /health rather than fatal at boot.
-            log.error("ring transport did not start: %s", exc)
-            service.degradations.append(str(exc))
         server = build_server(service, args.host, args.port)
         await server.start()
         # The phone is the entire point, so losing its address is fatal, not a
@@ -3524,43 +2593,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"on port {args.port}; the phone dials that address. "
                 "Is tailscaled up? Exiting so the service manager retries."
             )
-        start_inbound(service)
         # Started here rather than in Service.__init__ so a test can construct a
         # Service without a running loop, and so nothing sweeps the box during
         # the suite.
         poll = asyncio.ensure_future(service.safety_poll())
         poll.add_done_callback(lambda task: task.cancelled() or task.exception())
-        # NOT warmed here. His rule, 2026-09-11: "nothing should be loaded
-        # prematurely ... after the call is done then everything unloaded."
-        # The warm now happens in `_voice_leg`, while the phone is ringing, and
-        # the models are dropped when the call ends. The comment this replaces
-        # justified the startup load with "0.7 s for `small` on CPU" -- true
-        # when written, but the default has since become `large-v3` on CUDA,
-        # which is 1,918 MiB held from boot to shutdown for calls that mostly
-        # never come.
-        log.info(
-            "hotline-iosd on %s:%d, ring=%s, rings_when_closed=%s",
-            args.host, args.port, getattr(transport, "name", "?"),
-            getattr(transport, "rings_when_closed", False),
-        )
-        if getattr(transport, "is_fake", False):
-            log.error(
-                "THIS DOORBELL RINGS NOTHING (%s). Callers will be told so and "
-                "hotline-call will fall back to hotline-page.",
-                getattr(transport, "name", "?"),
-            )
-            service.degradations.append(
-                f"doorbell {getattr(transport, 'name', '?')} is fake; nobody is being rung"
-            )
+        log.info("hotline-iosd on %s:%d; calls go to hotline-calld at %s",
+                 args.host, args.port, calld.url)
         await server.serve_forever()
 
     try:
         asyncio.run(run())
     except KeyboardInterrupt:
         return 0
-    finally:
-        if service.inbound is not None:
-            service.inbound.stop()
     return 0
 
 

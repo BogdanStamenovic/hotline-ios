@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 
 import pytest
+from ringing import ring as open_ring
 
 pytest.importorskip(
     "hotline.httpd",
@@ -28,7 +29,6 @@ import hotline.agents
 import hotline.ccsocks
 
 from hotline_ios.daemon import STALL_AFTER, Service, build_server
-from hotline_ios.ring.loopback import LoopbackTransport
 
 
 class Reply:
@@ -131,7 +131,7 @@ def test_the_five_fields_the_installed_app_decodes_are_still_there(doubles):
     Model.swift declares exactly these five and every one is non-optional.
     """
     doubles["sessions"] = [Session("s1", name="data-88", cwd="/home/bodas/data", status="busy")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     row = service.agents()["agents"][0]
     assert isinstance(row["name"], str)
     assert isinstance(row["task"], str)
@@ -148,7 +148,7 @@ def test_a_clean_finish_and_a_crash_stop_looking_identical(doubles):
         Record("finished", "s1", task="built it", completed_at=2000.0),
         Record("crashed", "s2", task="was building it"),
     ]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
 
     rows = named(service.agents(include_done=True)["agents"])
     assert rows["finished"]["state"] == "done"
@@ -165,7 +165,7 @@ def test_a_clean_finish_and_a_crash_stop_looking_identical(doubles):
 def test_a_finished_agent_still_running_is_never_hidden(doubles):
     doubles["records"] = [Record("winding-down", "s1", completed_at=2000.0)]
     doubles["sessions"] = [Session("s1")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     rows = named(service.agents()["agents"])
     assert rows["winding-down"]["state"] == "done"
     assert rows["winding-down"]["live"] is True
@@ -176,7 +176,7 @@ def test_state_follows_the_process_with_no_poll_in_between(doubles):
     -- which is also why this test needs no clock."""
     doubles["records"] = [Record("hotline-80", "s1", task="building")]
     doubles["sessions"] = [Session("s1", status="busy")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     assert named(service.agents()["agents"])["hotline-80"]["state"] == "working"
 
     doubles["sessions"] = [Session("s1", status="idle")]
@@ -191,7 +191,7 @@ def test_state_follows_the_process_with_no_poll_in_between(doubles):
 def test_stalled_is_never_claimed_without_having_observed_a_tool_call(doubles):
     doubles["records"] = [Record("hotline-80", "s1")]
     doubles["sessions"] = [Session("s1", status="busy")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
 
     # Busy is the session's own word for itself and is exactly what goes stale
     # when a process hangs. Nothing has been observed, so nothing is claimed.
@@ -212,17 +212,15 @@ def test_stalled_is_never_claimed_without_having_observed_a_tool_call(doubles):
 async def test_the_blocked_pin_is_the_oldest_unanswered_question(doubles):
     doubles["records"] = [Record("hotline-80", "s1")]
     doubles["sessions"] = [Session("s1")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     server = await run_server(service, 18830)
     try:
         assert named(service.agents()["agents"])["hotline-80"]["blocked"] is False
 
         first = await asyncio.to_thread(
-            post, 18830, "/api/v1/call",
-            {"reason": "may I spend money", "agent": "hotline-80", "wait": False})
+            open_ring, post, 18830, "may I spend money", agent="hotline-80")
         second = await asyncio.to_thread(
-            post, 18830, "/api/v1/call",
-            {"reason": "and on this too", "agent": "hotline-80", "wait": False})
+            open_ring, post, 18830, "and on this too", agent="hotline-80")
 
         row = named(service.agents()["agents"])["hotline-80"]
         assert row["blocked"] is True
@@ -259,7 +257,7 @@ async def test_roster_events_report_a_change_and_then_block_until_the_next(doubl
     foregrounded app shows whatever was true when it launched unless something
     tells it otherwise."""
     doubles["records"] = [Record("hotline-80", "s1")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
 
     # Baseline. The first computation of a process ticks nothing: a restart is
     # not the whole box changing at once.
@@ -294,7 +292,7 @@ async def test_roster_events_report_a_change_and_then_block_until_the_next(doubl
 async def test_a_purge_reaches_the_phone_as_a_generation_change(doubles):
     doubles["records"] = [Record("hotline-80", "s1")]
     doubles["sessions"] = [Session("s1")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     service.store.append_event("hotline-80", "claude", "something", at=1.0)
 
     before = named(service.agents()["agents"])["hotline-80"]["historyGeneration"]
@@ -312,12 +310,11 @@ async def test_a_purge_reaches_the_phone_as_a_generation_change(doubles):
 async def test_one_channel_carries_a_ring_and_a_delegation_in_order(doubles):
     doubles["records"] = [Record("hotline-80", "s1")]
     doubles["sessions"] = [Session("s1")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     server = await run_server(service, 18831)
     try:
         ring = await asyncio.to_thread(
-            post, 18831, "/api/v1/call",
-            {"reason": "may I spend money", "agent": "hotline-80", "wait": False})
+            open_ring, post, 18831, "may I spend money", agent="hotline-80")
         await asyncio.to_thread(
             post, 18831, "/api/v1/say", {"text": "status?", "agent": "hotline-80"})
 
@@ -351,7 +348,7 @@ async def test_one_channel_carries_a_ring_and_a_delegation_in_order(doubles):
 async def test_the_feed_parks_until_something_arrives(doubles):
     doubles["records"] = [Record("hotline-80", "s1")]
     doubles["sessions"] = [Session("s1")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     service.store.append_event("hotline-80", "claude", "first", at=1.0)
     cursor = service.store.latest_seq()
 
@@ -369,7 +366,7 @@ async def test_the_feed_parks_until_something_arrives(doubles):
 
 async def test_a_dead_agents_channel_reads_as_closed(doubles):
     doubles["records"] = [Record("hotline-80", "s1")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     service.store.append_event("hotline-80", "claude", "last words", at=1.0)
     page = await service.agent_feed("hotline-80", 0, 0)
     assert page["closed"] is True
@@ -377,7 +374,7 @@ async def test_a_dead_agents_channel_reads_as_closed(doubles):
 
 
 async def test_an_unknown_agent_is_a_404_not_an_empty_feed(doubles):
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     server = await run_server(service, 18832)
     try:
         for path, payload in (
@@ -398,7 +395,7 @@ async def test_an_unknown_agent_is_a_404_not_an_empty_feed(doubles):
 async def test_history_pages_backwards_and_meets_the_feed_over_http(doubles):
     doubles["records"] = [Record("hotline-80", "s1")]
     doubles["sessions"] = [Session("s1")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     for i in range(25):
         service.store.append_event("hotline-80", "tool", f"e{i}", at=float(i))
     server = await run_server(service, 18833)
@@ -425,7 +422,7 @@ async def test_history_pages_backwards_and_meets_the_feed_over_http(doubles):
 
 async def test_history_refuses_to_hand_a_phone_the_whole_database(doubles):
     doubles["records"] = [Record("hotline-80", "s1")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     for i in range(250):
         service.store.append_event("hotline-80", "tool", f"e{i}", at=float(i))
     page = service.history("hotline-80", None, 10_000)
@@ -437,12 +434,11 @@ async def test_history_refuses_to_hand_a_phone_the_whole_database(doubles):
 
 async def test_a_dry_run_shows_him_real_numbers_and_deletes_nothing(doubles):
     doubles["records"] = [Record("hotline-80", "s1")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     server = await run_server(service, 18834)
     try:
         ring = await asyncio.to_thread(
-            post, 18834, "/api/v1/call",
-            {"reason": "ping", "agent": "hotline-80", "wait": False})
+            open_ring, post, 18834, "ping", agent="hotline-80")
         held = len(service.store.since("hotline-80", 0))
 
         preview = await asyncio.to_thread(
@@ -467,7 +463,7 @@ async def test_a_dry_run_shows_him_real_numbers_and_deletes_nothing(doubles):
 
 async def test_purging_everything_is_refused_rather_than_downgraded(doubles):
     doubles["records"] = [Record("hotline-80", "s1")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     service.store.open_conversation("c1", "hotline-80", "ring", opened_at=1.0)
     service.store.append_event("hotline-80", "tool", "e", conversation_id="c1", at=1.0)
     server = await run_server(service, 18835)
@@ -486,7 +482,7 @@ async def test_purging_everything_is_refused_rather_than_downgraded(doubles):
 async def test_retire_hides_an_agent_and_gives_it_back(doubles):
     doubles["records"] = [Record("hotline-80", "s1"), Record("data-88", "s2")]
     doubles["sessions"] = [Session("s1"), Session("s2")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     service.store.append_event("hotline-80", "claude", "kept", at=1.0)
     server = await run_server(service, 18836)
     try:
@@ -517,7 +513,7 @@ async def test_retire_hides_an_agent_and_gives_it_back(doubles):
 
 async def test_retire_will_not_guess_which_way_he_meant(doubles):
     doubles["records"] = [Record("hotline-80", "s1")]
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     server = await run_server(service, 18837)
     try:
         with pytest.raises(urllib.error.HTTPError) as exc:
@@ -532,7 +528,7 @@ async def test_retire_will_not_guess_which_way_he_meant(doubles):
 
 
 async def test_health_reports_the_database_it_actually_checked(doubles):
-    service = Service(LoopbackTransport(), FakePool())
+    service = Service(FakePool())
     server = await run_server(service, 18838)
     try:
         body = await asyncio.to_thread(get, 18838, "/health")
