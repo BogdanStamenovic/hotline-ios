@@ -1,0 +1,47 @@
+commit 0b3cb719b2daf88a2365d79ee62c1b49cd7d0e0b
+run    41215740415
+frames 112
+
+MARK   4.400  went straight to the shell: launch argument configured the server
+MARK   8.256  cold auto-open fired: a channel is already open, backing out
+MARK  11.070  === drive begins ===
+MARK  11.070  scroll: three slow drags up
+MARK  20.034  scroll: two slow drags back down
+MARK  25.854  fling: fast flick up, let it decelerate
+MARK  29.503  fling: fast flick down, into the top rubber band
+MARK  33.068  swipe: drag a row left to rest the controls open
+MARK  35.952  swipe: close it again
+MARK  38.861  channel: tap a row
+MARK  41.843    tap 1: visible row data-1e, finished, Okay so y
+MARK  49.377    tap 1 opened nothing
+MARK  50.250    tap 2: visible row data-1e, finished, Okay so y
+MARK  54.761    channel opened on the SECOND tap -- the first was consumed closing a swiped row
+MARK  55.827    channel is open
+MARK  55.827  thread: slow scroll up
+MARK  65.258  thread: fling
+MARK  68.605  thread: pull past the top (74 pt arms 'load older')
+MARK  72.869  map: drag the ROUTE chip down to open
+MARK  82.299    found the route chip: Route. 3 phases.
+MARK   4.659  went straight to the shell: launch argument configured the server
+MARK   6.819  roster rendered
+
+(no PROSE/VIEW lines -- the checks did not run)
+
+-- the chip in the tree --
+    t =    58.68s Waiting 4.0s for "route-chip" Button to exist
+    t =    59.75s     Checking `Expect predicate `existsNoRetry == 1` for object "route-chip" Button`
+    t =    59.76s         Checking existence of `"route-chip" Button`
+    t =    60.76s     Checking `Expect predicate `existsNoRetry == 1` for object "route-chip" Button`
+    t =    60.76s         Checking existence of `"route-chip" Button`
+    t =    61.72s     Checking `Expect predicate `existsNoRetry == 1` for object "route-chip" Button`
+    t =    61.72s         Checking existence of `"route-chip" Button`
+    t =    62.69s     Checking `Expect predicate `existsNoRetry == 1` for object "route-chip" Button`
+    t =    62.69s         Checking existence of `"route-chip" Button`
+    t =    62.80s     Checking existence of `"route-chip" Button`
+
+-- build errors, if any --
+(none)
+
+-- test failures, if any --
+/Users/runner/work/hotline-ios/hotline-ios/ci/UITests/DriveTests.swift:730: error: -[HotlineCallUITests.DriveTests testDrive] : Failed to get screenshot: Timed out while requesting screenshot.
+Test Case '-[HotlineCallUITests.DriveTests testDrive]' failed (156.874 seconds).
