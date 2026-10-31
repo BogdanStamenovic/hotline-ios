@@ -1,91 +1,44 @@
 # hotline-ios
 
-A real ringing call from a Claude Code session on `archserver` to Bogdan's
-iPhone. Full-screen native call UI, a ringtone, answer or decline, and a live
-transcript of what Claude is doing while you talk to it.
+The hotline iPhone app and the server it talks to, `hotline-iosd`: the roster
+of Claude Code agents on `archserver`, their channels and history, the controls
+(stop, retask, compact, resume, new), delegation (typing an instruction to an
+agent from the phone), and the conversations a ring opens.
 
-It replaces the escalating Discord `@mention` that stands in for a call today.
-He calls that a fake call and he is right: it is a push notification, it does
-not ring, and it does not present as a call.
+**Phone calls are not here any more.** On 2026-10-31 Bogdan moved call
+semantics out (Discord 1566035363657420962): the SIP ring, inbound calls, the
+media stack, the voices that talk on a call and the `hotline-call` CLI are
+[`hotline-call`](https://github.com/BogdanStamenovic/hotline-call), with their
+history. This repository is the iOS backbone.
 
-This is the client and the transport. The server side — session routing, VAD,
-Whisper, Piper, tool-call narration — is [`hotline`](../hotline), and this
-reuses it rather than rebuilding it.
+## How it meets hotline-call
 
-## What works today
+```
+agent ── hotline-call ──▶ hotline-calld :8792 ── rings ──▶ his iPhone
+                              │   ▲
+   /api/v1/conversations/*    │   │  /api/v1/call/reply, /api/v1/call/hangup
+   (each call, best effort)   ▼   │  (his typed answer, his dismissal)
+                          hotline-iosd :8789 ◀──── the iPhone app
+                          /api/v1/call is forwarded to :8792 for old callers
+```
 
-- **The call pipeline, end to end, in tests.** Audio in, segmented, transcribed,
-  routed into a live Claude session, answered, spoken back, with barge-in and
-  tool-call narration. 64 tests, ~3 seconds.
-- **`hotline-call`** — the replacement for `hotline-page`. Same arguments, same
-  exit codes, and it falls back to `hotline-page` when a call cannot be
-  delivered, so adopting it is never worse than staying put.
-- **`hotline-iosd`** — the service that places calls, gated on Tailscale, with a
-  live event feed the phone reads.
-- **The SIP probe** — a running instrument that answers one question about
-  outcome C by capturing what a SIP client actually puts on the wire.
-- **The iOS app source** — CallKit, live transcript, tool display.
-- **A Swift toolchain that runs on this Arch box**, with an iOS project
-  scaffolded and building up to the SDK step.
+| what | where it lives | why |
+|---|---|---|
+| the conversation a ring opens, its feed, his typed reply | here, in the store | the app lists the question before the phone rings and he answers it by typing |
+| the ring, the voice, Whisper, PersonaPlex, inbound | hotline-calld | a phone call is one question with its own failure modes (GPU handoff, SIP registrar) |
+| `/api/v1/call` on 8789 | forwarded unchanged to hotline-calld | agents and scripts that post here keep working during the transition |
+| `/health` `ok`, `fake`, `ring_ready`, `transport` | copied from hotline-calld's `/health`, asked each time | the app's `Health` decoder and the call-bogdan skill read them here |
 
-## What does not exist yet
+New endpoints for hotline-calld (same allowlist and key as everything else):
 
-- **No ring transport is chosen, so nothing rings yet.** Two free options are
-  live and neither has been proven on his actual phone. The transports are
-  swappable modules precisely because this was not settled when the code was
-  written.
-- **The app has never been built into an `.ipa`**, because that needs Apple's
-  Darwin SDK. See below.
-- **The app has never run on a phone.** Nothing in it is device-tested.
-- **No audio has crossed a real network.** The RTP layer is tested against
-  itself over real sockets, not against a handset.
-- **The 7-day re-sign story is documented, not automated.**
+| route | body | |
+|---|---|---|
+| `POST /api/v1/conversations/open` | `{conversation, agent, kind}` | `kind` is `ring` (an agent blocked on him) or `say`; idempotent |
+| `POST /api/v1/conversations/append` | `{conversation, kind, text}` | `kind` in claude, summary, you, state, error |
+| `POST /api/v1/conversations/close` | `{conversation}` | |
 
-## The two free ways to make it ring
-
-The paid Apple Developer Program ($99/yr) is **closed** — he chose free. It is
-mentioned only because it explains the shape of what follows.
-
-**Neither option can put the doorbell on Tailscale unconditionally**, and that
-is worth saying plainly since "everything over Tailscale" was the ask. Audio,
-control, transcripts and session routing are all direct over the tailnet with no
-cloud in the path. The ring is the part that may have to leave it.
-
-### B — his own app
-
-The app holds a socket open to `archserver` and calls
-`CXProvider.reportNewIncomingCall` itself. **No push, no APNs, nothing leaves
-the tailnet** — the only shape in which the ask is literally true.
-
-CallKit needs no entitlement, which is why this is possible on a free Apple ID.
-Push does, and free provisioning does not grant it, verified against Apple's own
-capabilities table.
-
-The catch is that **a push wakes a dead process and a socket cannot.** After a
-reboot, a force-quit, a certificate expiry, or an audio session interrupted by
-an ordinary incoming phone call, nothing rings — silently. It also needs
-sideloading, and re-signing every 7 days, and iOS allows only one VPN profile,
-so SideStore's loopback VPN and Tailscale collide.
-
-### C — the stock Linphone app
-
-Linphone registers to a SIP server on `archserver` and Belledonne's push relay
-rings it. **Works with the app closed and the phone locked.** No Apple account,
-no sideloading, no re-signing.
-
-The mechanism is the designed one, not a trick: RFC 8599 has a client hand its
-push token to its SIP server precisely so that server can trigger the push.
-Belledonne's own server code shows the endpoint takes ordinary account auth and
-does no ownership check.
-
-The catch is that the ringing app has someone else's name on it, and their relay
-is in the doorbell path.
-
-**The chosen composition is not to choose.** `RingChain` runs them in order and
-falls through: his app if its socket is alive, Linphone if not, the Discord
-mention if neither, the siren last. `ConfirmedRing` makes that meaningful by
-requiring each transport to *prove* the phone rang — otherwise a chain does not
-degrade, it just stops at the first transport that fails silently.
+`/api/v1/reply` and `/api/v1/hangup` behave as before and are also forwarded to
+hotline-calld in the background, so a `hotline-call` blocked on him returns.
 
 ## Building an iOS app on Linux
 
@@ -116,27 +69,63 @@ Everything lives in a private tree that one `rm` undoes.
 
 ```
 server/src/hotline_ios/
-  ring/base.py      the seam every outcome plugs into
-  ring/watch.py     require a transport to prove the phone rang
-  ring/chain.py     fall through from one way of reaching him to the next
-  ring/loopback.py  no phone at all; what the tests run against
-  media/rtp.py      RTP + G.711 + a jitter buffer sized for the real path
-  media/pcm.py      format conversion, and G.711 as a lookup table
-  media/codec.py    Opus (preferred) and G.711, and the SDP offer/answer between them
-  call.py           one call, independent of how it rang
-  daemon.py         hotline-iosd
-  call_cli.py       hotline-call
-  sipprobe.py       the instrument that settles outcome C
+  daemon.py     hotline-iosd: roster, channels, control, delegation, conversations
+  calld.py      the way to hotline-calld: the forward, the health, the reply hand-off
+  store.py      SQLite: agents, conversations, events, phases
+  events.py     the in-memory feed with a cursor and a long-poll wait
+  ingest.py     reading Claude Code transcripts into the map
+  hooks.py      hotline-ios-hooks: the map hook and statusline wrapper
+  endpoint.py   where the daemon listens, and where local tooling reaches it
+  vitals.py     output rate, tools per minute
 app/HotlineCall/    the iOS app
-docs/               architecture, and the five-minute SIP experiment
+ci/                 the simulator and UI-test harness
+deploy/, tools/     the live unit, the .ipa beam, profile watch
+docs/               architecture, server plan, design
 ```
+
+## Install
+
+```bash
+ownbox install hotline-ios --yes
+```
+
+`./ownbox.sh setup` builds `server/.venv` with uv (Python 3.12, `-e
+server[hotline,dev]`), writes `.env` from `.env.example` if there is none,
+renders `systemd/hotline-ios.service.in` into the user unit and starts it, and
+offers to register the map hook (skipped without a terminal, because it edits
+the settings every session on the box uses). A hand-written
+`~/.config/systemd/user/hotline-ios.service` -- archserver has one -- is left
+alone and reported. `update` rebuilds the venv and restarts a unit it owns; the
+store migrates itself on open. `remove` takes the unit away and asks before
+deleting the store.
+
+Calls need hotline-call installed and running: `ownbox install hotline-call`.
 
 ## Running the tests
 
-One venv, no GPU, no models. The delegation path never touches Whisper or
-Piper, so this needs only hotline's *source* on the path, not its dependencies.
+One venv, no GPU, no models; hotline's *source* on the path, not its
+dependencies.
 
 ```bash
 cd server
 PYTHONPATH=/home/bodas/data/hotline/src:src .venv/bin/python -m pytest -q tests
 ```
+
+152 passed in 1.3 s on archserver (2026-10-31).
+
+## Limitations
+
+- **Calls depend on a second daemon.** With hotline-calld down, `/health` says
+  `ok: false`, `/api/v1/call` is a 503 (which `hotline-call` turns into a
+  `hotline-page` fallback), and the rest of the app works.
+- **A typed answer reaches a waiting call only if the forward lands.** The
+  answer is stored here regardless; a failed forward is counted on `/health`
+  under `calld.forward_failures` and is not retried.
+- **A call opened while this daemon was down never appears in the app.**
+  hotline-calld's mirror is best effort and does not replay.
+- **The `/api/v1/call` forward is transitional.** Removing it, once nothing
+  posts to 8789 for calls, is a separate change.
+- **`hotline-ios-hooks` cannot be re-run safely on a box where it is already
+  installed:** a second run rewrites the statusline wrapper without the command
+  it wrapped. `ownbox.sh` therefore never re-runs it.
+
